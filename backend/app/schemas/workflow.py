@@ -19,7 +19,7 @@ class WorkflowUpdate(BaseModel):
 class WorkflowResponse(BaseModel):
     id: UUID
     name: str
-    description: str
+    description: str | None = None
     version: str
     status: str
     definition: dict
