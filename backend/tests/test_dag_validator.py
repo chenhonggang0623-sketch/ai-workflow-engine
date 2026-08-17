@@ -113,11 +113,37 @@ class TestDAGValidatorDataFlow:
 
 
 class TestDAGValidatorStructure:
-    def test_orphan_node_warns(self):
+    def test_orphan_node_is_error(self):
         wf = _dag([_node("a"), _node("b")], [])
         report = validate_dag(wf)
-        orphan = [w for w in report.warnings if w.code == "ORPHAN_NODE"]
-        assert len(orphan) == 2
+        orphans = [e for e in report.errors if e.code == "ORPHAN_NODE"]
+        assert len(orphans) == 2
+        assert not report.approved
+
+    def test_disconnected_component_is_error(self):
+        wf = _dag(
+            [_node("a"), _node("b"), _node("c"), _node("d")],
+            [
+                {"source": "a", "target": "b"},
+                {"source": "c", "target": "d"},
+            ],
+        )
+        report = validate_dag(wf)
+        assert not report.approved
+        assert any(e.code == "DISCONNECTED" for e in report.errors)
+
+    def test_connected_dag_approved(self):
+        wf = _dag(
+            [_node("a"), _node("b"), _node("c"), _node("d")],
+            [
+                {"source": "a", "target": "b"},
+                {"source": "a", "target": "c"},
+                {"source": "c", "target": "d"},
+            ],
+        )
+        report = validate_dag(wf)
+        assert report.approved
+        assert not any(e.code == "DISCONNECTED" for e in report.errors)
 
     def test_fan_in_limit(self):
         nodes = [_node("agg"), *[_node(f"src{i}") for i in range(10)]]
@@ -140,11 +166,14 @@ class TestDAGValidatorStructure:
 class TestDAGValidatorConfigurableLimits:
     def test_limits_override_default_size(self):
         nodes = [_node(f"n{i}") for i in range(40)]
-        report = validate_dag(_dag(nodes, []), limits=DagLimits(max_nodes=50))
+        edges = [
+            {"source": f"n{i}", "target": f"n{i+1}"} for i in range(39)
+        ]
+        report = validate_dag(_dag(nodes, edges), limits=DagLimits(max_nodes=50))
         assert report.approved
         assert not any(e.code == "NODE_SIZE_LIMIT" for e in report.errors)
 
-        tight = validate_dag(_dag(nodes, []), limits=DagLimits(max_nodes=10))
+        tight = validate_dag(_dag(nodes, edges), limits=DagLimits(max_nodes=10))
         assert any(e.code == "NODE_SIZE_LIMIT" for e in tight.errors)
 
     def test_limits_override_fan_in(self):

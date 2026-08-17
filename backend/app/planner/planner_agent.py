@@ -8,7 +8,11 @@ from app.planner.planning_review import PlanningReview
 from app.planner.complexity_analyzer import ComplexityAnalyzer
 from app.planner.requirement_analyzer import RequirementAnalyzer
 from app.planner.architect import Architect
-from app.engine.dag_validator import validate_dag, resolve_dag_limits
+from app.engine.dag_validator import (
+    validate_dag,
+    resolve_dag_limits,
+    ensure_dag_connected,
+)
 from app.engine.prompt_factory import build_node_prompt
 from app.skills.registry import SkillRegistry, FALLBACK_SKILL_ID
 from app.skills.catalog import build_catalog
@@ -239,6 +243,9 @@ class PlannerAgent:
         workflow_data = self._normalize_providers(workflow_data)
         workflow_data = self._align_contracts(workflow_data, blueprint)
         workflow_data = self._apply_skills(workflow_data, blueprint)
+        # 断连修复：LLM 生成的 DAG 可能出现孤立节点/断连组件，
+        # 统一把断开的部分按顺序串入主链，保证无「线段连接不上」
+        workflow_data = ensure_dag_connected(workflow_data)
 
         review = PlanningReview.review(workflow_data)
         blueprint_review = PlanningReview.review_against_blueprint(workflow_data, blueprint)
@@ -258,6 +265,7 @@ class PlannerAgent:
             )
             workflow_data = self._align_contracts(workflow_data, blueprint)
             workflow_data = self._apply_skills(workflow_data, blueprint)
+            workflow_data = ensure_dag_connected(workflow_data)
 
         return workflow_data
 
@@ -280,6 +288,7 @@ class PlannerAgent:
             revised_workflow = dict(workflow_data)
 
         revised_workflow = self._normalize_providers(revised_workflow)
+        revised_workflow = ensure_dag_connected(revised_workflow)
 
         review = PlanningReview.review(revised_workflow)
         if not review["approved"]:
@@ -318,6 +327,7 @@ class PlannerAgent:
         nodes = []
         edges = []
         prev_outputs: dict[str, str] = {}
+        prev_placed_id: str | None = None
 
         for module in modules:
             mid = module.get("id", "module")
@@ -385,8 +395,13 @@ class PlannerAgent:
             for d in module.get("depends_on", []):
                 if d in prev_outputs:
                     edges.append({"source": f"{d}_agent", "target": node_id})
+            if not any(d in prev_outputs for d in module.get("depends_on", [])) and prev_placed_id:
+                # 无有效依赖（或悬空依赖）的模块按序串联，保证流水线顺序执行：
+                # 前一个模块完成后当前模块才启动
+                edges.append({"source": prev_placed_id, "target": node_id})
             placed.add(mid)
             prev_outputs[mid] = output_key
+            prev_placed_id = node_id
 
         # 处理未排入的模块（依赖环兜底）：串在队尾
         remaining = [m for m in modules if m.get("id") not in placed]

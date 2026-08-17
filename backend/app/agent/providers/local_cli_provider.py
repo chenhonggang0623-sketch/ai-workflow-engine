@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Awaitable, Callable
 
 from app.agent.executor.types import ExecutionRequest
 from app.agent.executor.local_cli_executor import LocalCLIExecutor
@@ -33,6 +34,7 @@ class LocalCLIProvider(AgentProvider):
         input_text: str,
         context: dict,
         config: dict,
+        log_sink: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> dict:
         prompt_parts = [input_text]
         if system_prompt:
@@ -53,6 +55,7 @@ class LocalCLIProvider(AgentProvider):
             },
             working_directory=config.get("working_directory"),
             timeout=int(config.get("timeout") or config.get("timeout_seconds") or 300),
+            log_sink=log_sink,
         )
         try:
             result = await self._executor.execute(request)

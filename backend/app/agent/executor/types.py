@@ -1,4 +1,6 @@
 from enum import Enum
+from typing import Awaitable, Callable
+
 from pydantic import BaseModel, Field
 
 
@@ -16,6 +18,8 @@ class ExecutionRequest(BaseModel):
     config: dict = Field(default_factory=dict)
     working_directory: str | None = None
     timeout: int = 300
+    # 逐行控制台输出回调：log_sink(line, stream)，stream 为 "stdout" | "stderr"
+    log_sink: Callable[[str, str], Awaitable[None]] | None = None
 
 
 class ExecutionResult(BaseModel):

@@ -25,7 +25,7 @@ class StubProvider(AgentProvider):
         self._result = result
         self.calls = []
 
-    async def execute(self, system_prompt, input_text, context, config):
+    async def execute(self, system_prompt, input_text, context, config, log_sink=None):
         self.calls.append((system_prompt, input_text, context, config))
         return dict(self._result)
 

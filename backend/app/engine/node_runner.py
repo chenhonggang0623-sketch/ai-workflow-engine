@@ -54,8 +54,13 @@ def _apply_output_mapping(node: NodeDefinition, output: dict, context: dict) -> 
     return ctx
 
 
-async def _execute_with_timeout(handler, node: NodeDefinition, node_input: dict, ctx: dict, timeout: int) -> dict:
-    return await asyncio.wait_for(handler(node, node_input, ctx), timeout=timeout)
+async def _execute_with_timeout(handler, node: NodeDefinition, node_input: dict,
+                                ctx: dict, timeout: int, log_sink=None) -> dict:
+    return await asyncio.wait_for(
+        handler(node, node_input, ctx, log_sink) if log_sink is not None
+        else handler(node, node_input, ctx),
+        timeout=timeout,
+    )
 
 
 class NodeRunner:
@@ -75,6 +80,7 @@ class NodeRunner:
         self,
         node: NodeDefinition,
         context: dict,
+        log_sink=None,
     ) -> NodeResult:
         node_input = _apply_input_mapping(node, context)
         if node.type == NodeType.CONDITION:
@@ -99,7 +105,9 @@ class NodeRunner:
 
         for attempt in range(max_retries + 1):
             try:
-                output = await _execute_with_timeout(handler, node, node_input, context, timeout)
+                output = await _execute_with_timeout(
+                    handler, node, node_input, context, timeout, log_sink
+                )
 
                 return NodeResult(
                     node_id=node.id,
@@ -152,7 +160,8 @@ class NodeRunner:
         }
         return handlers.get(node_type)
 
-    async def _run_agent(self, node: NodeDefinition, node_input: dict, ctx: dict) -> dict:
+    async def _run_agent(self, node: NodeDefinition, node_input: dict, ctx: dict,
+                         log_sink=None) -> dict:
         if self._router is not None:
             # system_prompt 缺失时用契约驱动的提示词工厂兜底生成
             if not node.config.system_prompt:
@@ -166,6 +175,7 @@ class NodeRunner:
                 config=node.config.model_dump(),
                 working_directory=node.config.working_directory,
                 timeout=node.config.timeout_seconds,
+                log_sink=log_sink,
             )
             result = await self._router.execute(node.config.executor_type, request)
             if not result.success:
@@ -185,7 +195,7 @@ class NodeRunner:
         )
         return result
 
-    async def _run_tool(self, node: NodeDefinition, node_input: dict, ctx: dict = None) -> dict:
+    async def _run_tool(self, node: NodeDefinition, node_input: dict, ctx: dict = None, log_sink=None) -> dict:
         if self._tools is None:
             return {"output": "ToolRegistry not configured"}
         result = await self._tools.execute(
@@ -193,7 +203,7 @@ class NodeRunner:
         )
         return result
 
-    async def _run_condition(self, node: NodeDefinition, node_input: dict, ctx: dict = None) -> dict:
+    async def _run_condition(self, node: NodeDefinition, node_input: dict, ctx: dict = None, log_sink=None) -> dict:
         expr = node.config.expression or ""
         if not expr:
             return {"condition_result": True}
@@ -203,14 +213,14 @@ class NodeRunner:
         except Exception as exc:
             raise RuntimeError(f"Condition eval failed: {exc}") from exc
 
-    async def _run_loop(self, node: NodeDefinition, node_input: dict, ctx: dict = None) -> dict:
+    async def _run_loop(self, node: NodeDefinition, node_input: dict, ctx: dict = None, log_sink=None) -> dict:
         max_iter = node.config.max_iterations or 1
         return {"iterations": max_iter, "body_nodes": node.config.body_node_ids or []}
 
-    async def _run_human(self, node: NodeDefinition, node_input: dict, ctx: dict = None) -> dict:
+    async def _run_human(self, node: NodeDefinition, node_input: dict, ctx: dict = None, log_sink=None) -> dict:
         return {"status": "awaiting_input", "input": node_input}
 
-    async def _run_planner(self, node: NodeDefinition, node_input: dict, ctx: dict = None) -> dict:
+    async def _run_planner(self, node: NodeDefinition, node_input: dict, ctx: dict = None, log_sink=None) -> dict:
         return {"plan": f"plan from {node.label}", "input": node_input}
 
     def apply_output_mapping(self, node: NodeDefinition, output: dict, context: dict) -> dict:

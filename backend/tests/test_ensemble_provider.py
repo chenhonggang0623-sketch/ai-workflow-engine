@@ -20,7 +20,7 @@ class StubProvider(AgentProvider):
         if name:
             self.name = name
 
-    async def execute(self, system_prompt, input_text, context, config):
+    async def execute(self, system_prompt, input_text, context, config, log_sink=None):
         if self._fail:
             return {
                 "status": "failed",

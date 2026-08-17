@@ -70,6 +70,7 @@ export type ExecutionStatus = "pending" | "running" | "paused" | "succeeded" | "
 export interface NodeExecution {
   id: string;
   execution_id: string;
+  node_execution_id: string | null;
   node_id: string;
   node_type: string;
   status: NodeStatus;

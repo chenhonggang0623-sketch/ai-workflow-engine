@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 
 class AgentProvider:
@@ -23,5 +23,6 @@ class AgentProvider:
         input_text: str,
         context: dict[str, Any],
         config: dict[str, Any],
+        log_sink: Callable[[str, str], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError

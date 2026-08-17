@@ -38,6 +38,10 @@ class DAGScheduler:
     def is_complete(self) -> bool:
         return len(self._completed) == len(self._node_map)
 
+    @property
+    def completed_count(self) -> int:
+        return len(self._completed)
+
     def get_execution_order(self) -> list[list[str]]:
         layers: list[list[str]] = []
         remaining = set(self._graph.nodes)

@@ -43,7 +43,7 @@ class EnsembleProvider(AgentProvider):
         self._registry = registry
         self._reviewer = reviewer or AgentReviewer()
 
-    async def execute(self, system_prompt, input_text, context, config):
+    async def execute(self, system_prompt, input_text, context, config, log_sink=None):
         ec = config.get("executor_config") or {}
         candidates = config.get("candidates") or ec.get("candidates") or []
         if not candidates:
@@ -80,9 +80,9 @@ class EnsembleProvider(AgentProvider):
                             .replace("{output}", audit_input[:8000])
                             .replace("{task}", input_text[:2000])
                         )
-                        res = await provider.execute(cand_prompt, "", context, deepcopy(config))
+                        res = await provider.execute(cand_prompt, "", context, deepcopy(config), log_sink=log_sink)
                     else:
-                        res = await provider.execute(system_prompt, input_text, context, deepcopy(config))
+                        res = await provider.execute(system_prompt, input_text, context, deepcopy(config), log_sink=log_sink)
                     results.append({
                         "index": idx,
                         "provider": provider_name,

@@ -256,3 +256,32 @@ class TestPlannerAgent:
         planner._normalize_providers(workflow)
         assert workflow["nodes"][0]["config"]["provider"] == "opencode_cli"
         assert workflow["nodes"][0]["config"]["executor_type"] == "local_cli"
+
+    def test_fallback_modules_chain_serial_pipeline(self, planner):
+        """fallback 模块 DAG 必须按流水线串行：悬空依赖不产生并行启动。
+
+        无有效依赖的模块依次串联（前一个完成后一个才启动），
+        保证 prd → 架构 → 开发 → 验证 的顺序执行。
+        """
+        modules = [
+            {"id": "pm", "name": "PRD", "depends_on": ["feasibility", "scope"],
+             "input_contract": ["requirement"], "output_contract": ["prd"]},
+            {"id": "architecture", "name": "Arch", "depends_on": ["scope_definition"],
+             "input_contract": ["prd"], "output_contract": ["design"]},
+            {"id": "backend", "name": "Backend", "depends_on": ["architecture_design", "db_schema"],
+             "input_contract": ["design"], "output_contract": ["api"]},
+            {"id": "qa", "name": "QA", "depends_on": ["backend"],
+             "input_contract": ["api"], "output_contract": ["report"]},
+        ]
+        wf = planner._build_from_modules(modules, {"modules": modules, "constraints": []})
+        node_ids = [n["id"] for n in wf["nodes"]]
+        assert node_ids == ["pm_agent", "architecture_agent", "backend_agent", "qa_agent"]
+        edge_pairs = {(e["source"], e["target"]) for e in wf["edges"]}
+        assert edge_pairs == {
+            ("pm_agent", "architecture_agent"),
+            ("architecture_agent", "backend_agent"),
+            ("backend_agent", "qa_agent"),
+        }
+        in_degree = {nid: sum(1 for e in wf["edges"] if e["target"] == nid) for nid in node_ids}
+        assert in_degree["pm_agent"] == 0
+        assert all(in_degree[nid] == 1 for nid in node_ids[1:])

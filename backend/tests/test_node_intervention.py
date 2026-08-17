@@ -63,7 +63,7 @@ class TestSlowNodeMarking:
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def slow_handler(node_def, context):
+        async def slow_handler(node_def, context, log_sink=None):
             started.set()
             await release.wait()
             return NodeResult(node_id=node_def.id, status=NodeStatus.SUCCEEDED, output={})
@@ -89,7 +89,7 @@ class TestSlowNodeMarking:
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def slow_handler(node_def, context):
+        async def slow_handler(node_def, context, log_sink=None):
             started.set()
             await release.wait()
             return NodeResult(node_id=node_def.id, status=NodeStatus.SUCCEEDED, output={})
@@ -116,7 +116,7 @@ class TestSwitchModelIntervention:
         release = asyncio.Event()
         attempts = []
 
-        async def flaky_handler(node_def, context):
+        async def flaky_handler(node_def, context, log_sink=None):
             if node_def.id == "n1":
                 attempts.append(node_def.config.provider)
                 if len(attempts) == 1:
@@ -149,7 +149,7 @@ class TestSwitchModelIntervention:
         release = asyncio.Event()
         calls = []
 
-        async def flaky_handler(node_def, context):
+        async def flaky_handler(node_def, context, log_sink=None):
             calls.append(node_def.id)
             if node_def.id == "n1" and node_def.config.provider == "opencode_cli":
                 started.set()
@@ -177,7 +177,7 @@ class TestTerminateIntervention:
         started = asyncio.Event()
         release = asyncio.Event()
 
-        async def slow_handler(node_def, context):
+        async def slow_handler(node_def, context, log_sink=None):
             started.set()
             await release.wait()
             return NodeResult(node_id=node_def.id, status=NodeStatus.SUCCEEDED, output={})

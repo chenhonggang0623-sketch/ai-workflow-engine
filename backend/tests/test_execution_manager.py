@@ -144,7 +144,7 @@ async def test_parallel_staggered_completion(mock_node_runner, mock_db_factory):
     exec_id = uuid4()
     delays = {"a": 0.05, "b": 0.2, "c": 0.35}
 
-    async def fake_handle(node, context):
+    async def fake_handle(node, context, log_sink=None):
         await asyncio.sleep(delays.get(node.id, 0))
         return NodeResult(
             node_id=node.id, status=NodeStatus.SUCCEEDED,
@@ -180,7 +180,7 @@ async def test_parallel_partial_failure_stops_downstream(mock_node_runner, mock_
     exec_id = uuid4()
     executed: list[str] = []
 
-    async def fake_handle(node, context):
+    async def fake_handle(node, context, log_sink=None):
         executed.append(node.id)
         await asyncio.sleep({}.get(node.id, 0))
         if node.id == "b":
@@ -279,7 +279,7 @@ async def test_cancel_interrupts_running_node(mock_node_runner, mock_db_factory)
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def slow_handler(node_def, context):
+    async def slow_handler(node_def, context, log_sink=None):
         started.set()
         await release.wait()
         return NodeResult(node_id=node_def.id, status=NodeStatus.SUCCEEDED, output={})

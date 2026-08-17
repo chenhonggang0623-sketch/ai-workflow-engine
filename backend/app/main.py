@@ -6,7 +6,7 @@ from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router as api_router
-from app.api.websocket.handlers import execution_ws, agent_messages_ws
+from app.api.websocket.handlers import execution_ws, agent_messages_ws, manager
 from app.core.db import engine, Base, async_session_factory
 from app.core.redis import init_redis, close_redis
 from app.core.app_config import config_store
@@ -128,6 +128,9 @@ async def lifespan(app: FastAPI):
         node_runner=node_runner,
         max_concurrency=5,
         context_service=context_service,
+    )
+    exec_mgr.set_event_callback(
+        lambda execution_id, message: manager.broadcast_execution(execution_id, message)
     )
 
     app.state.llm_gateway = llm

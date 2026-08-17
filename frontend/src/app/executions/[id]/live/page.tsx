@@ -1,11 +1,33 @@
 "use client";
 
-import { useEffect, useState, use, useCallback } from "react";
+import { useEffect, useState, use, useCallback, useRef } from "react";
 import Link from "next/link";
 import { getExecution, getExecutionNodes, getExecutionLogs, cancelExecution, interveneExecution } from "@/lib/executions";
 import { WorkflowDAG } from "@/components/WorkflowDAG";
 import { EnsembleMetadata } from "@/components/EnsembleMetadata";
 import type { Execution as ExecutionType, ExecutionLog, NodeExecution, WorkflowNode, WorkflowEdge, NodeStatus } from "@/lib/types";
+
+type WsMessage = {
+  type: string;
+  node_id?: string;
+  node_type?: string;
+  node_execution_id?: string;
+  stream?: string;
+  message?: string;
+  status?: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error?: string | null;
+  completed?: number;
+  total?: number;
+  created_at?: string;
+};
+
+function buildWsUrl(id: string): string {
+  const proto = window.location.protocol === "https:" ? "wss" : "ws";
+  const port = window.location.port === "8080" ? "8000" : window.location.port;
+  return `${proto}://${window.location.hostname}${port ? `:${port}` : ""}/ws/executions/${id}`;
+}
 
 export default function ExecutionLivePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -20,6 +42,8 @@ export default function ExecutionLivePage({ params }: { params: Promise<{ id: st
   const [intervening, setIntervening] = useState(false);
   const [switchProvider, setSwitchProvider] = useState("claude_cli");
   const [switchModel, setSwitchModel] = useState("");
+  const [wsConnected, setWsConnected] = useState(false);
+  const logBoxRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
     try {
@@ -41,11 +65,109 @@ export default function ExecutionLivePage({ params }: { params: Promise<{ id: st
     }
   }, [id]);
 
+  // WebSocket 实时推送（节点状态 / 控制台输出），HTTP 轮询 5s 兜底
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let closed = false;
+
+    const connect = () => {
+      if (closed) return;
+      try {
+        ws = new WebSocket(buildWsUrl(id));
+      } catch {
+        return;
+      }
+      ws.onopen = () => setWsConnected(true);
+      ws.onmessage = (ev) => {
+        let msg: WsMessage;
+        try {
+          msg = JSON.parse(ev.data as string);
+        } catch {
+          return;
+        }
+        if (msg.type === "node_output" && msg.message != null) {
+          setLogs((prev) => [
+            ...prev,
+            {
+              id: `ws-${prev.length}-${Date.now()}`,
+              level: "output",
+              message: msg.message ?? "",
+              metadata: { stream: msg.stream || "stdout" },
+              node_execution_id: msg.node_execution_id ?? null,
+              created_at: msg.created_at ?? new Date().toISOString(),
+            },
+          ]);
+        } else if (msg.type === "node_started") {
+          setNodeExecs((prev) => {
+            const exists = prev.some((n) => n.node_execution_id === msg.node_execution_id);
+            if (exists) return prev;
+            return [
+              ...prev,
+              {
+                id: msg.node_execution_id ?? "",
+                execution_id: id,
+                node_execution_id: msg.node_execution_id ?? null,
+                node_id: msg.node_id ?? "",
+                node_type: msg.node_type ?? "agent",
+                status: "running",
+                input: null,
+                output: null,
+                error: null,
+                retry_count: 0,
+                started_at: msg.started_at ?? null,
+                finished_at: null,
+              },
+            ];
+          });
+        } else if (msg.type === "node_finished") {
+          setNodeExecs((prev) =>
+            prev.map((n) =>
+              n.node_execution_id === msg.node_execution_id
+                ? { ...n, status: (msg.status as NodeStatus) || n.status, error: msg.error ?? n.error, finished_at: msg.finished_at ?? n.finished_at }
+                : n
+            )
+          );
+        } else if (msg.type === "execution_status" && msg.status) {
+          setExecution((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  status: msg.status as ExecutionType["status"],
+                  started_at: msg.started_at ?? prev.started_at,
+                  finished_at: msg.finished_at ?? prev.finished_at,
+                }
+              : prev
+          );
+        }
+      };
+      ws.onclose = () => {
+        setWsConnected(false);
+        if (!closed) reconnectTimer = setTimeout(connect, 3000);
+      };
+      ws.onerror = () => ws?.close();
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      ws?.close();
+    };
+  }, [id]);
+
   useEffect(() => {
     load();
-    const interval = setInterval(load, 2000);
+    const interval = setInterval(load, 5000);
     return () => clearInterval(interval);
   }, [load]);
+
+  // 控制台输出自动滚动到底部
+  useEffect(() => {
+    if (logBoxRef.current) {
+      logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
+    }
+  }, [logs, selectedNodeId]);
 
   async function handleCancel() {
     if (!confirm("Cancel this execution?")) return;
@@ -120,6 +242,13 @@ export default function ExecutionLivePage({ params }: { params: Promise<{ id: st
           <span className={`text-sm font-medium ${statusColor[execution.status] || "text-gray-400"}`}>
             {execution.status.toUpperCase()}
           </span>
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full border ${
+            wsConnected
+              ? "border-green-700 bg-green-950/40 text-green-400"
+              : "border-gray-700 bg-gray-900 text-gray-500"
+          }`}>
+            {wsConnected ? "LIVE" : "POLLING"}
+          </span>
           {execution.replan_count > 0 && (
             <span className="text-xs px-2 py-0.5 rounded-full border border-yellow-700 bg-yellow-950/40 text-yellow-400">
               replanned ×{execution.replan_count}
@@ -174,7 +303,7 @@ export default function ExecutionLivePage({ params }: { params: Promise<{ id: st
               onClick={() => setSelectedNodeId(runningNode.node_id)}
               className="ml-1 text-xs text-blue-400 hover:text-blue-300 underline"
             >
-              view output
+              view console
             </button>
           </div>
         ) : (
@@ -262,7 +391,7 @@ export default function ExecutionLivePage({ params }: { params: Promise<{ id: st
           />
         </div>
 
-        {/* 节点详情抽屉 */}
+        {/* 节点详情抽屉：点击节点 → 右侧实时控制台输出 */}
         <aside className={`w-96 shrink-0 bg-gray-900 border border-gray-800 rounded-lg overflow-y-auto transition-all ${selectedNode ? "block" : "hidden"}`}>
           {selectedNode && (
             <div className="p-4">
@@ -329,25 +458,46 @@ export default function ExecutionLivePage({ params }: { params: Promise<{ id: st
 
               <EnsembleMetadata output={selectedNode.output} />
 
-              <div className="mt-4 mb-2 text-xs font-medium text-gray-400 uppercase tracking-wide">
-                Node logs ({selectedNodeLogs.length})
+              <div className="mt-4 mb-2 flex items-center justify-between">
+                <span className="text-xs font-medium text-gray-400 uppercase tracking-wide">
+                  Console output ({selectedNodeLogs.length})
+                </span>
+                {selectedNode.status === "running" && (
+                  <span className="flex items-center gap-1 text-[10px] text-green-400">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+                    streaming
+                  </span>
+                )}
               </div>
-              {selectedNodeLogs.length > 0 ? (
-                <div className="space-y-1.5">
-                  {selectedNodeLogs.map((l) => (
-                    <div key={l.id} className="text-[11px] font-mono bg-gray-950 rounded px-2 py-1.5">
-                      <span className={`mr-1.5 ${
-                        l.level === "error" ? "text-red-400" : l.level === "warning" ? "text-yellow-400" : "text-gray-600"
-                      }`}>
-                        {l.level}
-                      </span>
-                      <span className="text-gray-400">{l.message}</span>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-xs text-gray-600 bg-gray-950 rounded p-3">No logs for this node yet</div>
-              )}
+              <div
+                ref={logBoxRef}
+                className="max-h-72 overflow-y-auto bg-gray-950 rounded border border-gray-800"
+              >
+                {selectedNodeLogs.length > 0 ? (
+                  <div className="p-2 space-y-px font-mono text-[11px] leading-relaxed">
+                    {selectedNodeLogs.map((l, i) => {
+                      const stream = (l.metadata as { stream?: string } | null)?.stream;
+                      const isErr = l.level === "error" || stream === "stderr";
+                      return (
+                        <div key={l.id || i} className="flex gap-1.5">
+                          <span className={`shrink-0 select-none ${isErr ? "text-red-500" : "text-gray-600"}`}>
+                            {stream === "stderr" ? "ERR" : isErr ? "ERR" : "OUT"}
+                          </span>
+                          <span className={`whitespace-pre-wrap break-all ${isErr ? "text-red-300" : "text-gray-300"}`}>
+                            {l.message}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="p-3 text-xs text-gray-600">
+                    {selectedNode.status === "running"
+                      ? "Waiting for console output..."
+                      : "No console output recorded"}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </aside>

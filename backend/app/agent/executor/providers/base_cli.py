@@ -37,7 +37,8 @@ class BaseCLIExecutor(BaseExecutor):
     def _build_args(self, prompt: str, request: ExecutionRequest) -> list[str]:
         return self.args_template[:]
 
-    async def _read_stream(self, stream, sink: list[str], tag: str) -> None:
+    async def _read_stream(self, stream, sink: list[str], tag: str,
+                           log_sink=None) -> None:
         while True:
             line = await stream.readline()
             if not line:
@@ -45,6 +46,11 @@ class BaseCLIExecutor(BaseExecutor):
             text = line.decode(errors="replace").rstrip("\n")
             sink.append(text)
             logger.info("[%s %s] %s", self.command, tag, text)
+            if log_sink is not None:
+                try:
+                    await log_sink(text, tag)
+                except Exception:
+                    logger.exception("log_sink failed")
 
     def resolve_command(self) -> str:
         return self.command
@@ -87,6 +93,7 @@ class BaseCLIExecutor(BaseExecutor):
 
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
+        log_sink = getattr(request, "log_sink", None)
 
         def _kill_process_group() -> None:
             # CLI grandchildren (dev servers etc.) keep stdout/stderr pipes
@@ -97,7 +104,8 @@ class BaseCLIExecutor(BaseExecutor):
             except (ProcessLookupError, PermissionError, OSError):
                 proc.kill()
 
-        async def _flush_remaining(stream, sink: list[str], tag: str) -> None:
+        async def _flush_remaining(stream, sink: list[str], tag: str,
+                                   log_sink=None) -> None:
             # After the main process exits, grandchildren may still hold the
             # pipe write end open, so EOF never arrives. Drain line-by-line
             # with a per-line cap so we can never block forever.
@@ -112,14 +120,19 @@ class BaseCLIExecutor(BaseExecutor):
                 if text:
                     sink.append(text)
                     logger.info("[%s %s] %s", self.command, tag, text[:500])
+                    if log_sink is not None:
+                        try:
+                            await log_sink(text, tag)
+                        except Exception:
+                            logger.exception("log_sink failed")
 
         async def _drain() -> None:
             readers = [
                 asyncio.ensure_future(
-                    self._read_stream(proc.stdout, stdout_lines, "stdout")
+                    self._read_stream(proc.stdout, stdout_lines, "stdout", log_sink)
                 ),
                 asyncio.ensure_future(
-                    self._read_stream(proc.stderr, stderr_lines, "stderr")
+                    self._read_stream(proc.stderr, stderr_lines, "stderr", log_sink)
                 ),
             ]
             try:
@@ -133,8 +146,8 @@ class BaseCLIExecutor(BaseExecutor):
                     r.cancel()
                 await asyncio.gather(*readers, return_exceptions=True)
                 await asyncio.gather(
-                    _flush_remaining(proc.stdout, stdout_lines, "stdout"),
-                    _flush_remaining(proc.stderr, stderr_lines, "stderr"),
+                    _flush_remaining(proc.stdout, stdout_lines, "stdout", log_sink),
+                    _flush_remaining(proc.stderr, stderr_lines, "stderr", log_sink),
                 )
 
         async def _cleanup() -> None:

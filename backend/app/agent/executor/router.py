@@ -94,6 +94,7 @@ class ExecutorRouter:
                     input_text=input_text,
                     context=request.context or {},
                     config=config,
+                    log_sink=request.log_sink,
                 )
                 return self._result_from_provider(result)
 

@@ -1,4 +1,8 @@
+import logging
+
 from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 
 class DAGIssue(BaseModel):
@@ -210,15 +214,42 @@ def validate_dag(workflow: dict, limits: DagLimits | None = None) -> ValidationR
     orphans = [nid for nid in node_ids
                if in_degree[nid] == 0 and out_degree[nid] == 0 and len(nodes) > 1]
     for nid in orphans:
-        warnings.append(DAGIssue(
+        errors.append(DAGIssue(
             code="ORPHAN_NODE",
-            level="warning",
+            level="error",
             node_id=nid,
             message=f"Node '{nid}' has no incoming or outgoing edges — it will never "
                     f"run and cannot be reached",
         ))
     if orphans:
         suggestions.append("Connect orphan nodes to the existing DAG or remove them")
+
+    # 连通性：整个 DAG 必须是一个弱连通分量（把边视为无向，从任意节点出发
+    # 必须能到达所有节点）。断连组件 / 半孤立节点意味着「线段连接不上」：
+    # 节点要么永远不被调度，要么脱离主流水线顺序，视为 error。
+    # （对无环图，弱连通 ⇔ 每个节点都处于「从某起点可达」且「能到达某终点」的路径上）
+    if len(node_ids) > 1:
+        visited: set[str] = set()
+        stack = [node_ids[0]]
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            stack.extend(children[cur])
+            stack.extend(parents[cur])
+        disconnected = [nid for nid in node_ids if nid not in visited]
+        for nid in disconnected:
+            errors.append(DAGIssue(
+                code="DISCONNECTED",
+                level="error",
+                node_id=nid,
+                message=f"Node '{nid}' is disconnected from the main DAG — no line "
+                        f"connects it to the rest of the graph",
+            ))
+        if disconnected:
+            suggestions.append("Connect disconnected nodes into the main chain so "
+                               "every node runs in order")
 
     # 扇入扇出
     for nid in node_ids:
@@ -261,3 +292,87 @@ def _report(
         warnings=warnings,
         suggestions=suggestions,
     )
+
+
+def ensure_dag_connected(workflow: dict) -> dict:
+    """修复断连的 DAG：把孤立节点 / 断连组件按顺序串入主链。
+
+    策略（确定性、零 LLM 成本）：
+    1. 以无向连通分量划分节点，包含首个节点的分量为「主链」；
+    2. 其余分量各取拓扑序第一个节点作为入口；
+    3. 依次把主链末尾（拓扑序最后节点）与下一分量的入口连边，
+       形成单条弱连通 DAG，且不会引入环。
+
+    返回修复后的 workflow（副本，不修改入参）。
+    """
+    nodes = list(workflow.get("nodes", []) or [])
+    edges = [dict(e) for e in (workflow.get("edges", []) or [])]
+    if len(nodes) <= 1:
+        return {**workflow, "nodes": nodes, "edges": edges}
+
+    node_ids = [n.get("id", "") for n in nodes]
+    id_set = set(node_ids)
+    children: dict[str, list[str]] = {nid: [] for nid in id_set}
+    parents: dict[str, list[str]] = {nid: [] for nid in id_set}
+    for e in edges:
+        src, tgt = e.get("source", ""), e.get("target", "")
+        if src in id_set and tgt in id_set:
+            children[src].append(tgt)
+            parents[tgt].append(src)
+
+    # 无向连通分量
+    visited: set[str] = set()
+    components: list[list[str]] = []
+    for nid in node_ids:
+        if nid in visited:
+            continue
+        comp: list[str] = []
+        stack = [nid]
+        while stack:
+            cur = stack.pop()
+            if cur in visited:
+                continue
+            visited.add(cur)
+            comp.append(cur)
+            stack.extend(children[cur])
+            stack.extend(parents[cur])
+        components.append(comp)
+
+    if len(components) <= 1:
+        return {**workflow, "nodes": nodes, "edges": edges}
+
+    def _component_order(comp: list[str]) -> list[str]:
+        # 分量内拓扑序（Kahn），返回顺序执行的第一/最后一个节点
+        local_in = {nid: 0 for nid in comp}
+        local_children: dict[str, list[str]] = {nid: [] for nid in comp}
+        for e in edges:
+            src, tgt = e.get("source", ""), e.get("target", "")
+            if src in local_in and tgt in local_in:
+                local_children[src].append(tgt)
+                local_in[tgt] += 1
+        ready = [nid for nid in comp if local_in[nid] == 0]
+        order: list[str] = []
+        while ready:
+            cur = ready.pop(0)
+            order.append(cur)
+            for s in local_children[cur]:
+                local_in[s] -= 1
+                if local_in[s] == 0:
+                    ready.append(s)
+        return order or comp
+
+    main_comp = components[0]
+    main_order = _component_order(main_comp)
+    tail = main_order[-1]
+    added = 0
+    for comp in components[1:]:
+        comp_order = _component_order(comp)
+        head = comp_order[0]
+        edges.append({"source": tail, "target": head, "label": "ordered"})
+        added += 1
+        tail = comp_order[-1]
+
+    if added:
+        logger.info("ensure_dag_connected: linked %d disconnected component(s)", added)
+
+    return {**workflow, "nodes": nodes, "edges": edges}

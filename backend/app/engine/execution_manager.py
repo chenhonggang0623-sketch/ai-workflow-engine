@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import UTC, datetime
+from typing import Awaitable, Callable
 from uuid import UUID
 
 from app.core.config import settings
@@ -21,6 +22,94 @@ from app.models.workflow import ExecutionLog as ExecutionLogModel
 logger = logging.getLogger(__name__)
 
 
+class NodeLogSink:
+    """节点控制台输出流：逐行入队 → 批量落库 ExecutionLog + 实时广播。
+
+    避免每个 CLI 输出行都开一个 DB 事务：队列累积，0.5s 或满 50 行批量提交。
+    """
+
+    def __init__(self, execution_id: UUID, node_id: str,
+                 node_execution_id: UUID, db_factory, broadcast: Callable[[dict], Awaitable[None]] | None):
+        self._execution_id = execution_id
+        self._node_id = node_id
+        self._node_execution_id = node_execution_id
+        self._db_factory = db_factory
+        self._broadcast = broadcast
+        self._queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+        self._task: asyncio.Task | None = None
+
+    def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.ensure_future(self._writer())
+
+    async def write(self, line: str, stream: str) -> None:
+        await self._queue.put((line, stream))
+
+    async def stop(self) -> None:
+        if self._task is None:
+            return
+        self._task.cancel()
+        try:
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        self._task = None
+
+    async def _writer(self) -> None:
+        try:
+            while True:
+                batch: list[tuple[str, str]] = []
+                try:
+                    item = await asyncio.wait_for(self._queue.get(), timeout=0.5)
+                    batch.append(item)
+                except asyncio.TimeoutError:
+                    pass
+                while len(batch) < 50 and not self._queue.empty():
+                    batch.append(self._queue.get_nowait())
+                if batch:
+                    await self._flush(batch)
+        except asyncio.CancelledError:
+            batch = []
+            while not self._queue.empty():
+                batch.append(self._queue.get_nowait())
+            if batch:
+                await self._flush(batch)
+            raise
+
+    async def _flush(self, batch: list[tuple[str, str]]) -> None:
+        try:
+            async with self._db_factory() as session:
+                for line, stream in batch:
+                    session.add(
+                        ExecutionLogModel(
+                            execution_id=self._execution_id,
+                            node_execution_id=self._node_execution_id,
+                            level="output",
+                            message=line,
+                            log_metadata={"stream": stream},
+                        )
+                    )
+                await session.commit()
+        except Exception:
+            logger.exception("Failed to persist node console output")
+        if self._broadcast is not None:
+            for line, stream in batch:
+                try:
+                    await self._broadcast(
+                        {
+                            "type": "node_output",
+                            "node_id": self._node_id,
+                            "node_execution_id": str(self._node_execution_id),
+                            "stream": stream,
+                            "message": line,
+                            "created_at": datetime.now(UTC).replace(tzinfo=None).isoformat(),
+                        }
+                    )
+                except Exception:
+                    logger.exception("Failed to broadcast node output")
+                    return
+
+
 class ExecutionManager:
     def __init__(self, node_runner: NodeRunner, max_concurrency: int = 5,
                  context_service: ContextService | None = None):
@@ -35,6 +124,19 @@ class ExecutionManager:
         self._slow_since: dict[UUID, dict[str, datetime]] = {}
         self._slow_notified: dict[UUID, set[str]] = {}
         self._slow_after = settings.slow_node_after_seconds
+        self._event_cb: Callable[[UUID, dict], Awaitable[None]] | None = None
+
+    def set_event_callback(self, cb: Callable[[UUID, dict], Awaitable[None]]) -> None:
+        """注册实时事件回调（如 WebSocket 广播）：回调签名 (execution_id, message)。"""
+        self._event_cb = cb
+
+    async def _emit(self, execution_id: UUID, message: dict) -> None:
+        if self._event_cb is None:
+            return
+        try:
+            await self._event_cb(execution_id, message)
+        except Exception:
+            logger.exception("Event callback failed")
 
     def slow_nodes(self, execution_id: UUID) -> dict[str, dict]:
         """返回超阈值未干预的运行中节点（供 API 查询）：
@@ -107,6 +209,11 @@ class ExecutionManager:
             cancel_event.set()
 
         sm.start(len(workflow.nodes))
+        await self._emit(execution_id, {
+            "type": "execution_status",
+            "status": sm.status.value,
+            "started_at": sm.started_at.isoformat() if sm.started_at else None,
+        })
         semaphore = asyncio.Semaphore(self._max_concurrency)
 
         node_results: list[NodeResult] = []
@@ -124,7 +231,8 @@ class ExecutionManager:
         try:
             while not scheduler.is_complete():
                 if cancel_event.is_set():
-                    sm.cancel()
+                    if not sm.is_terminal():
+                        sm.cancel()
                     break
 
                 if sm.status == ExecutionStatus.PAUSED:
@@ -173,7 +281,8 @@ class ExecutionManager:
                     await asyncio.gather(*pending, return_exceptions=True)
                     cancel_watcher.cancel()
                     intervene_watcher.cancel()
-                    sm.cancel()
+                    if not sm.is_terminal():
+                        sm.cancel()
                     break
                 cancel_watcher.cancel()
                 intervene_watcher.cancel()
@@ -240,11 +349,22 @@ class ExecutionManager:
 
                     scheduler.mark_completed(result.node_id)
                     sm.increment_progress()
+                    await self._emit(execution_id, {
+                        "type": "progress",
+                        "completed": scheduler.completed_count,
+                        "total": len(workflow.nodes),
+                    })
 
             if not sm.is_terminal():
                 sm.succeed()
+            await self._emit(execution_id, {
+                "type": "execution_status",
+                "status": sm.status.value,
+                "finished_at": sm.finished_at.isoformat() if sm.finished_at else None,
+            })
         except asyncio.CancelledError:
-            sm.cancel()
+            if not sm.is_terminal():
+                sm.cancel()
         except Exception as exc:
             logger.exception("Execution %s loop crashed", execution_id)
             if not sm.is_terminal():
@@ -337,9 +457,33 @@ class ExecutionManager:
                 )
                 await session.commit()
 
+            await self._emit(execution_id, {
+                "type": "node_started",
+                "node_id": node_def.id,
+                "node_type": node_def.type.value,
+                "node_execution_id": str(exec_id),
+                "started_at": started_at.isoformat(),
+            })
+
+            broadcast = None
+            if self._event_cb is not None:
+                async def broadcast(msg: dict) -> None:
+                    await self._emit(execution_id, msg)
+            sink = NodeLogSink(
+                execution_id=execution_id,
+                node_id=node_def.id,
+                node_execution_id=exec_id,
+                db_factory=db_factory,
+                broadcast=broadcast,
+            )
+            sink.start()
+
             try:
-                result = await self._node_runner.handle_node(node_def, context)
+                result = await self._node_runner.handle_node(
+                    node_def, context, log_sink=sink.write
+                )
             except asyncio.CancelledError:
+                await sink.stop()
                 finished_at = datetime.now(UTC).replace(tzinfo=None)
                 async with db_factory() as session:
                     stored = await session.get(NodeExecutionModel, exec_id)
@@ -356,6 +500,13 @@ class ExecutionManager:
                         )
                     )
                     await session.commit()
+                await self._emit(execution_id, {
+                    "type": "node_finished",
+                    "node_id": node_def.id,
+                    "node_execution_id": str(exec_id),
+                    "status": NodeStatus.CANCELLED.value,
+                    "finished_at": finished_at.isoformat(),
+                })
                 return NodeResult(
                     node_id=node_def.id,
                     status=NodeStatus.CANCELLED,
@@ -364,6 +515,7 @@ class ExecutionManager:
                     finished_at=finished_at,
                 )
 
+            await sink.stop()
             finished_at = datetime.now(UTC).replace(tzinfo=None)
 
             async with db_factory() as session:
@@ -395,6 +547,15 @@ class ExecutionManager:
                         )
                     )
                 await session.commit()
+
+            await self._emit(execution_id, {
+                "type": "node_finished",
+                "node_id": node_def.id,
+                "node_execution_id": str(exec_id),
+                "status": result.status.value,
+                "finished_at": finished_at.isoformat(),
+                "error": result.error,
+            })
 
             return NodeResult(
                 node_id=node_def.id,
