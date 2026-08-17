@@ -1,0 +1,31 @@
+# OS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+*.egg-info/
+.venv/
+venv/
+
+# Databases & runtime data
+*.db
+*.sqlite*
+backend/data/
+backend/generated_projects/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+
+# Tooling
+.playwright-mcp/

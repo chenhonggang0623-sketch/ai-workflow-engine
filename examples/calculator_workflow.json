@@ -1,0 +1,76 @@
+{
+  "name": "Calculator HTML Generator",
+  "description": "生成一个简单计算器HTML页面 — 需求分析 → 前端开发(opencode_cli) → 代码检查(opencode_cli)",
+  "version": "1.0.0",
+  "nodes": [
+    {
+      "id": "req_agent",
+      "type": "agent",
+      "label": "需求分析 Agent",
+      "config": {
+        "provider": "opencode_cli",
+        "executor_type": "local_cli",
+        "role": "requirement_analyst",
+        "purpose": "分析并明确计算器页面的需求",
+        "system_prompt": "你是需求分析师。分析给定的需求，输出清晰、结构化的需求说明（功能清单、交互要求、页面结构）。",
+        "timeout_seconds": 300
+      },
+      "input_mapping": [
+        {"source": "$.requirement", "target": "requirement"}
+      ],
+      "output_mapping": [
+        {"source": "output", "target": "$.analysis"}
+      ]
+    },
+    {
+      "id": "fe_agent",
+      "type": "agent",
+      "label": "前端开发 Agent",
+      "config": {
+        "provider": "opencode_cli",
+        "executor_type": "local_cli",
+        "executor_config": {
+          "working_directory": "../examples/calculator_output",
+          "auto_approve": true
+        },
+        "role": "frontend_developer",
+        "purpose": "实现计算器 HTML 页面",
+        "system_prompt": "你是一个前端开发工程师，负责创建 HTML/CSS/JS 页面。根据需求分析结果，在 examples/calculator_output/ 目录下创建 calculator.html：一个美观、可用的计算器页面，支持四则运算、小数、清除等基本功能。完成后输出文件路径和页面说明。",
+        "timeout_seconds": 600
+      },
+      "input_mapping": [
+        {"source": "$.analysis", "target": "analysis"}
+      ],
+      "output_mapping": [
+        {"source": "output", "target": "$.html_code"}
+      ]
+    },
+    {
+      "id": "review_agent",
+      "type": "agent",
+      "label": "代码检查 Agent",
+      "config": {
+        "provider": "opencode_cli",
+        "executor_type": "local_cli",
+        "executor_config": {
+          "working_directory": "../examples/calculator_output",
+          "auto_approve": true
+        },
+        "role": "code_reviewer",
+        "purpose": "检查 calculator.html 的实现质量",
+        "system_prompt": "你是一个代码检查工程师。检查 examples/calculator_output/calculator.html 的实现：功能完整性、交互正确性、代码质量、浏览器兼容性。如果发现问题，直接修复。输出检查结论（通过/不通过）、发现的问题和修复说明。",
+        "timeout_seconds": 600
+      },
+      "input_mapping": [
+        {"source": "$.html_code", "target": "html_code"}
+      ],
+      "output_mapping": [
+        {"source": "output", "target": "$.review_result"}
+      ]
+    }
+  ],
+  "edges": [
+    {"id": "e1", "source": "req_agent", "target": "fe_agent"},
+    {"id": "e2", "source": "fe_agent", "target": "review_agent"}
+  ]
+}

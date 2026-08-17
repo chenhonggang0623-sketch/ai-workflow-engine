@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Calculator</title>
+<style>
+  :root {
+    --bg: #eef1f6;
+    --card: #ffffff;
+    --display-bg: #f7f9fc;
+    --display-text: #1a1f2e;
+    --display-history: #64748b;
+    --num-btn: #f2f4f8;
+    --num-btn-text: #1a1f2e;
+    --op-btn: #d9e4ff;
+    --op-btn-text: #2b4ff5;
+    --fn-btn: #e5e8ee;
+    --fn-btn-text: #5a6478;
+    --equals-btn: #2b4ff5;
+    --equals-btn-text: #ffffff;
+    --border: #e2e6ee;
+    --shadow: 0 20px 45px rgba(30, 42, 80, 0.12);
+    --active: #c6d0e4;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    padding: 24px;
+  }
+
+  .calculator {
+    width: 360px;
+    max-width: 100%;
+    background: var(--card);
+    border-radius: 24px;
+    padding: 24px;
+    box-shadow: var(--shadow);
+    user-select: none;
+  }
+
+  h1 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--fn-btn-text);
+    letter-spacing: 0.5px;
+    margin-bottom: 12px;
+  }
+
+  .display {
+    background: var(--display-bg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px 20px;
+    min-height: 110px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: flex-end;
+    overflow: hidden;
+  }
+
+  .history {
+    font-size: 15px;
+    color: var(--display-history);
+    min-height: 20px;
+    word-break: break-all;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+
+  .current {
+    font-size: 40px;
+    font-weight: 700;
+    color: var(--display-text);
+    line-height: 1.2;
+    word-break: break-all;
+    max-width: 100%;
+    margin-top: 4px;
+  }
+
+  .current.small {
+    font-size: 28px;
+  }
+
+  .keys {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    grid-template-rows: repeat(5, 64px);
+    gap: 12px;
+    margin-top: 20px;
+  }
+
+  button {
+    border: none;
+    border-radius: 16px;
+    font-size: 20px;
+    font-weight: 600;
+    cursor: pointer;
+    background: var(--num-btn);
+    color: var(--num-btn-text);
+    transition: transform 0.05s ease, background 0.12s ease, box-shadow 0.12s ease;
+    font-family: inherit;
+  }
+
+  button:active {
+    transform: scale(0.95);
+    background: var(--active);
+  }
+
+  button:focus-visible {
+    outline: 2px solid var(--equals-btn);
+    outline-offset: 2px;
+  }
+
+  .op { background: var(--op-btn); color: var(--op-btn-text); }
+  .fn { background: var(--fn-btn); color: var(--fn-btn-text); }
+
+  .equals {
+    background: var(--equals-btn);
+    color: var(--equals-btn-text);
+    grid-column: 4;
+    grid-row: 4 / span 2;
+    font-size: 26px;
+    box-shadow: 0 6px 16px rgba(43, 79, 245, 0.35);
+  }
+
+  .equals:active { background: #1f3cd6; }
+
+  .op.active {
+    background: #2b4ff5;
+    color: #ffffff;
+    box-shadow: 0 0 0 2px rgba(43, 79, 245, 0.3);
+  }
+
+  @media (max-width: 400px) {
+    body { padding: 12px; }
+    .calculator { border-radius: 18px; padding: 16px; }
+    .keys { gap: 8px; grid-template-rows: repeat(5, 58px); }
+    .current { font-size: 34px; }
+  }
+</style>
+</head>
+<body>
+  <div class="calculator">
+    <h1>Calculator</h1>
+    <div class="display">
+      <div class="history" id="history"></div>
+      <div class="current" id="current">0</div>
+    </div>
+    <div class="keys">
+      <button class="fn" data-action="clear">C</button>
+      <button class="fn" data-action="backspace">CE</button>
+      <button class="fn" data-action="percent">%</button>
+      <button class="op" data-action="divide">÷</button>
+      <button data-action="digit" data-value="7">7</button>
+      <button data-action="digit" data-value="8">8</button>
+      <button data-action="digit" data-value="9">9</button>
+      <button class="op" data-action="multiply">×</button>
+      <button data-action="digit" data-value="4">4</button>
+      <button data-action="digit" data-value="5">5</button>
+      <button data-action="digit" data-value="6">6</button>
+      <button class="op" data-action="subtract">−</button>
+      <button data-action="digit" data-value="1">1</button>
+      <button data-action="digit" data-value="2">2</button>
+      <button data-action="digit" data-value="3">3</button>
+      <button class="op" data-action="add">+</button>
+      <button class="fn" data-action="negate">±</button>
+      <button data-action="digit" data-value="0">0</button>
+      <button data-action="digit" data-value=".">.</button>
+      <button class="equals" data-action="equals">=</button>
+    </div>
+  </div>
+
+<script>
+(function () {
+  const MAX_DIGITS = 12;
+  const display = document.getElementById('current');
+  const historyEl = document.getElementById('history');
+  const opMap = { add: '+', subtract: '−', multiply: '×', divide: '÷' };
+
+  const state = {
+    displayValue: '0',
+    firstOperand: null,
+    operator: null,
+    waitingForOperand: false,
+    justEvaluated: false,
+    error: false
+  };
+
+  function formatValue(v) {
+    if (typeof v === 'string') return v;
+    const num = Number(v);
+    if (!isFinite(num)) return '溢出';
+    if (Number.isInteger(num) && Math.abs(num) < 1e12) return String(num);
+    if (Math.abs(num) < 1e-12) return '0';
+    let s = String(num);
+    if (s.includes('e') || Math.abs(num) >= 1e12 || (Math.abs(num) < 1e-6 && num !== 0)) {
+      return num.toExponential(6).replace(/(\.\d*?)0+e/, '$1e');
+    }
+    if (s.length > MAX_DIGITS + 2) {
+      const rounded = parseFloat(num.toPrecision(10));
+      s = String(rounded);
+      if (s.length > MAX_DIGITS + 2 || s.includes('e')) {
+        return num.toExponential(6).replace(/(\.\d*?)0+e/, '$1e');
+      }
+    }
+    return s;
+  }
+
+  function render() {
+    display.textContent = state.displayValue;
+    display.classList.toggle('small', state.displayValue.length > 10);
+  }
+
+  function buildHistory() {
+    const op = state.operator ? opMap[state.operator] : '';
+    if (state.firstOperand === null) return '';
+    return formatValue(state.firstOperand) + ' ' + op + ' ';
+  }
+
+  function updateHistory() {
+    historyEl.textContent = buildHistory();
+  }
+
+  function clearHighlights() {
+    document.querySelectorAll('.op.active').forEach(b => b.classList.remove('active'));
+  }
+
+  function highlightOp(op) {
+    clearHighlights();
+    if (!op) return;
+    const btn = document.querySelector('[data-action="' + op + '"]');
+    if (btn) {
+      btn.classList.add('active');
+      setTimeout(() => btn.classList.remove('active'), 180);
+    }
+  }
+
+  function inputDigit(d) {
+    if (state.error) return;
+
+    if (d === '.') {
+      if (state.waitingForOperand) {
+        state.displayValue = '0.';
+        state.waitingForOperand = false;
+        state.justEvaluated = false;
+        render();
+        return;
+      }
+      if (!state.displayValue.includes('.')) {
+        state.displayValue += '.';
+        render();
+      }
+      return;
+    }
+
+    if (state.justEvaluated) {
+      state.displayValue = d;
+      state.firstOperand = null;
+      state.operator = null;
+      state.justEvaluated = false;
+      clearHighlights();
+      render();
+      updateHistory();
+      return;
+    }
+
+    if (state.waitingForOperand) {
+      state.displayValue = d;
+      state.waitingForOperand = false;
+      render();
+      return;
+    }
+
+    if (state.displayValue === '0') {
+      state.displayValue = d;
+    } else if (state.displayValue.replace('-', '').replace('.', '').length < MAX_DIGITS) {
+      state.displayValue += d;
+    }
+    render();
+  }
+
+  function inputOperator(op) {
+    if (state.error) return;
+    clearHighlights();
+
+    const current = parseFloat(state.displayValue);
+    if (isNaN(current)) return;
+
+    if (state.firstOperand === null) {
+      state.firstOperand = current;
+    } else if (state.operator && !state.waitingForOperand) {
+      const result = calculate(state.firstOperand, current, state.operator);
+      if (result === null) return;
+      state.firstOperand = result;
+      state.displayValue = formatValue(result);
+    }
+
+    state.operator = op;
+    state.waitingForOperand = true;
+    state.justEvaluated = false;
+    render();
+    updateHistory();
+  }
+
+  function calculate(a, b, op) {
+    switch (op) {
+      case 'add': return a + b;
+      case 'subtract': return a - b;
+      case 'multiply': return a * b;
+      case 'divide':
+        if (b === 0) return null;
+        return a / b;
+      default: return null;
+    }
+  }
+
+  function handleEquals() {
+    if (state.error) return;
+
+    if (state.operator && state.firstOperand !== null && !state.waitingForOperand) {
+      const history = buildHistory() + formatValue(state.displayValue) + ' =';
+      historyEl.textContent = history;
+
+      const second = parseFloat(state.displayValue);
+      const result = calculate(state.firstOperand, second, state.operator);
+
+      if (result === null) {
+        state.error = true;
+        state.displayValue = '不能除以 0';
+        render();
+        return;
+      }
+
+      const formatted = formatValue(result);
+      if (formatted === '溢出') {
+        state.error = true;
+        state.displayValue = formatted;
+        render();
+        return;
+      }
+
+      state.firstOperand = null;
+      state.operator = null;
+      state.displayValue = formatted;
+      state.waitingForOperand = false;
+      state.justEvaluated = true;
+      clearHighlights();
+      render();
+    } else if (!state.justEvaluated) {
+      historyEl.textContent = state.displayValue + ' =';
+    }
+  }
+
+  function inputClear() {
+    state.displayValue = '0';
+    state.firstOperand = null;
+    state.operator = null;
+    state.waitingForOperand = false;
+    state.justEvaluated = false;
+    state.error = false;
+    clearHighlights();
+    render();
+    updateHistory();
+  }
+
+  function inputBackspace() {
+    if (state.error || state.waitingForOperand) return;
+    if (state.justEvaluated) return;
+
+    if (state.displayValue.length > 1) {
+      state.displayValue = state.displayValue.slice(0, -1);
+    } else {
+      state.displayValue = '0';
+    }
+    render();
+  }
+
+  function inputPercent() {
+    if (state.error) return;
+    const current = parseFloat(state.displayValue);
+    if (isNaN(current)) return;
+    if (state.firstOperand !== null && state.operator) {
+      const base = Math.abs(state.firstOperand);
+      const val = current / 100 * base;
+      state.displayValue = formatValue(val);
+      state.waitingForOperand = false;
+    } else {
+      state.displayValue = formatValue(current / 100);
+    }
+    render();
+  }
+
+  function inputNegate() {
+    if (state.error) return;
+    const v = parseFloat(state.displayValue);
+    if (isNaN(v)) return;
+    if (v === 0) {
+      state.displayValue = '0';
+      render();
+      return;
+    }
+    state.displayValue = state.displayValue.startsWith('-')
+      ? state.displayValue.slice(1)
+      : '-' + state.displayValue;
+    render();
+  }
+
+  document.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const action = btn.dataset.action;
+      if (action === 'digit') {
+        inputDigit(btn.dataset.value);
+      } else {
+        switch (action) {
+          case 'clear': inputClear(); break;
+          case 'backspace': inputBackspace(); break;
+          case 'percent': inputPercent(); break;
+          case 'negate': inputNegate(); break;
+          case 'equals': handleEquals(); break;
+          default: inputOperator(action);
+        }
+      }
+    });
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key >= '0' && e.key <= '9') { inputDigit(e.key); return; }
+    if (e.key === '.') { inputDigit('.'); return; }
+    switch (e.key) {
+      case '+': inputOperator('add'); break;
+      case '-': inputOperator('subtract'); break;
+      case '*': inputOperator('multiply'); break;
+      case '/': inputOperator('divide'); break;
+      case 'Enter': case '=': handleEquals(); break;
+      case 'Escape': case 'c': case 'C': inputClear(); break;
+      case 'Backspace': inputBackspace(); break;
+      case '%': inputPercent(); break;
+      default: return;
+    }
+    e.preventDefault();
+  });
+})();
+</script>
+</body>
+</html>
