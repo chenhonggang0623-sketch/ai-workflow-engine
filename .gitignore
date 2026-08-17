@@ -15,6 +15,7 @@ venv/
 *.sqlite*
 backend/data/
 backend/generated_projects/
+backend/app/generated_projects/
 
 # Secrets — never commit
 .env

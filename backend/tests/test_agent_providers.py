@@ -191,6 +191,89 @@ class TestLocalCLIProvider:
         assert "DO THE TASK" in prompt
         assert "value" in prompt
 
+    def _run_with_fake_proc(self, stdout_chunks, stderr_chunks, monkeypatch):
+        captured = {}
+
+        class FakeStream:
+            def __init__(self, chunks):
+                self._chunks = list(chunks)
+
+            async def readline(self):
+                return self._chunks.pop(0) if self._chunks else b""
+
+        class FakeProc:
+            returncode = 0
+
+            def __init__(self):
+                self.stdout = FakeStream(stdout_chunks)
+                self.stderr = FakeStream(stderr_chunks)
+
+            async def wait(self):
+                return 0
+
+        async def fake_spawn(*args, **kwargs):
+            captured["cmd"] = list(args)
+            return FakeProc()
+
+        monkeypatch.setattr(
+            "app.agent.executor.providers.base_cli.asyncio.create_subprocess_exec",
+            fake_spawn,
+        )
+        return captured
+
+    def test_ansi_escape_codes_stripped_from_cli_output(self, monkeypatch):
+        self._run_with_fake_proc(
+            [b"ANSWER\n"],
+            [b"\x1b[0m\n", b"> build \xc2\xb7 model\n", b"\x1b[0m\n"],
+            monkeypatch,
+        )
+        console = []
+
+        async def log_sink(line, stream):
+            console.append((stream, line))
+
+        executor = LocalCLIExecutor()
+        request = ExecutionRequest(
+            task={"prompt": "do it"},
+            config={"agent_provider": "claude"},
+            timeout=5,
+            log_sink=log_sink,
+        )
+        result = asyncio.run(executor.execute(request))
+        assert result.success is True
+        assert "ANSWER" in result.output["output"]
+        # Console lines from both streams must have ANSI escapes stripped
+        for stream, line in console:
+            assert "\x1b" not in line
+        # stderr banner line arrives clean (no escape garbage)
+        stderr_lines = [l for s, l in console if s == "stderr"]
+        assert all("build" not in l or l.startswith("> build") for l in stderr_lines)
+
+    def test_opencode_json_events_parsed_to_clean_output(self, monkeypatch):
+        self._run_with_fake_proc(
+            [
+                b'{"type":"step_start","timestamp":1,"part":{"type":"step-start"}}\n',
+                b'{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","title":"echo hello"}}}\n',
+                b'{"type":"text","part":{"type":"text","text":"RESULT"}}\n',
+                b'{"type":"step_finish","part":{"reason":"stop"}}\n',
+            ],
+            [],
+            monkeypatch,
+        )
+        executor = LocalCLIExecutor()
+        request = ExecutionRequest(
+            task={"prompt": "do it"},
+            config={"agent_provider": "opencode"},
+            timeout=5,
+        )
+        result = asyncio.run(executor.execute(request))
+        assert result.success is True
+        out = result.output["output"]
+        assert "RESULT" in out
+        assert "[tool:bash] echo hello" in out
+        assert "step_start" not in out
+        assert "step_finish" not in out
+
 
 # ---------------------------------------------------------------------------
 # Router provider dispatch

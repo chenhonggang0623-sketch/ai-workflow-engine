@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import signal
 
@@ -9,6 +10,8 @@ from app.agent.executor.base import BaseExecutor
 from app.agent.executor.types import ExecutionRequest, ExecutionResult
 
 logger = logging.getLogger(__name__)
+
+_ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x07]*(?:\x07|\x1b\\))")
 
 
 class BaseCLIExecutor(BaseExecutor):
@@ -37,13 +40,28 @@ class BaseCLIExecutor(BaseExecutor):
     def _build_args(self, prompt: str, request: ExecutionRequest) -> list[str]:
         return self.args_template[:]
 
+    def _strip_ansi(self, text: str) -> str:
+        return _ANSI_RE.sub("", text)
+
+    def _process_line(self, text: str, stream: str) -> str | None:
+        """Hook for providers to transform or drop captured lines.
+
+        Return None to exclude the line from output/console entirely.
+        """
+        cleaned = self._strip_ansi(text)
+        return cleaned if cleaned else None
+
     async def _read_stream(self, stream, sink: list[str], tag: str,
                            log_sink=None) -> None:
         while True:
             line = await stream.readline()
             if not line:
                 break
-            text = line.decode(errors="replace").rstrip("\n")
+            text = self._process_line(
+                line.decode(errors="replace").rstrip("\n"), tag
+            )
+            if text is None:
+                continue
             sink.append(text)
             logger.info("[%s %s] %s", self.command, tag, text)
             if log_sink is not None:
@@ -116,15 +134,18 @@ class BaseCLIExecutor(BaseExecutor):
                     return
                 if not line:
                     return
-                text = line.decode(errors="replace").rstrip("\n")
-                if text:
-                    sink.append(text)
-                    logger.info("[%s %s] %s", self.command, tag, text[:500])
-                    if log_sink is not None:
-                        try:
-                            await log_sink(text, tag)
-                        except Exception:
-                            logger.exception("log_sink failed")
+                text = self._process_line(
+                    line.decode(errors="replace").rstrip("\n"), tag
+                )
+                if not text:
+                    continue
+                sink.append(text)
+                logger.info("[%s %s] %s", self.command, tag, text[:500])
+                if log_sink is not None:
+                    try:
+                        await log_sink(text, tag)
+                    except Exception:
+                        logger.exception("log_sink failed")
 
         async def _drain() -> None:
             readers = [
