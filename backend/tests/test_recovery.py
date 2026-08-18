@@ -145,7 +145,7 @@ class TestRecoveryManager:
 
     @pytest.mark.asyncio
     async def test_find_alternative_all_busy(self, recovery, mock_registry):
-        mock_registry.list.return_value = [{"id": "agent-1", "status": "active"}]
+        mock_registry.list_agents.return_value = [{"id": "agent-1", "status": "active"}]
         alt = await recovery._find_alternative("agent-1")
         assert alt is None
 

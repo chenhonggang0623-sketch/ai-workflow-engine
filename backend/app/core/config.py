@@ -20,7 +20,6 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/ai_workflow"
     redis_url: str = "redis://localhost:6379/0"
-    qdrant_url: str = "http://localhost:6333"
 
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"

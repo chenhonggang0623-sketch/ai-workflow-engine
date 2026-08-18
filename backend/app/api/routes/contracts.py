@@ -30,7 +30,7 @@ async def list_contracts(
     db: AsyncSession = Depends(get_db),
 ):
     mgr = ContractManager(db)
-    contracts = await mgr.list(executor_id=executor_id, status=status)
+    contracts = await mgr.list_contracts(executor_id=executor_id, status=status)
     return contracts
 
 

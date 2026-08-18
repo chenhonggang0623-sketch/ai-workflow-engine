@@ -55,7 +55,7 @@ class AgentRegistry:
             "updated_at": agent.updated_at.isoformat() if agent.updated_at else None,
         }
 
-    async def list(self, status: str | None = None) -> list[dict]:
+    async def list_agents(self, status: str | None = None) -> list[dict]:
         query = select(Agent)
         if status:
             query = query.where(Agent.status == status)

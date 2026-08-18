@@ -93,14 +93,14 @@ class TestAgentRegistry:
         scalars_mock.all = MagicMock(return_value=agents)
         mock_db._make_execute_result(scalars=MagicMock(return_value=scalars_mock))
         registry = AgentRegistry(mock_db)
-        result = await registry.list()
+        result = await registry.list_agents()
         assert len(result) == 2
 
     @pytest.mark.asyncio
     async def test_list_agents_filtered_by_status(self, mock_db):
         mock_db._make_execute_result(scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[]))))
         registry = AgentRegistry(mock_db)
-        result = await registry.list(status="inactive")
+        result = await registry.list_agents(status="inactive")
         assert result == []
 
     @pytest.mark.asyncio

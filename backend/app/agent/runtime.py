@@ -110,7 +110,7 @@ class AgentExecutor:
             {"role": "user", "content": json.dumps(node_input, ensure_ascii=False)},
         ]
 
-        tool_defs = self._tools.list() if self._tools else []
+        tool_defs = self._tools.list_tools() if self._tools else []
         openai_tools = []
         for td in tool_defs:
             if td.schema:

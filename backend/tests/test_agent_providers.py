@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -143,6 +144,19 @@ class TestLocalCLIProvider:
     def test_prompt_includes_system_and_context(self, monkeypatch):
         captured = {}
 
+        class FakeStdIn:
+            def __init__(self):
+                self.data = b""
+
+            def write(self, data):
+                self.data += data
+
+            async def drain(self):
+                pass
+
+            def close(self):
+                pass
+
         class FakeStream:
             def __init__(self, chunks):
                 self._chunks = list(chunks)
@@ -153,9 +167,10 @@ class TestLocalCLIProvider:
         class FakeProc:
             returncode = 0
 
-            def __init__(self, prompt: str):
-                self.stdout = FakeStream([prompt.encode()])
+            def __init__(self):
+                self.stdout = FakeStream([b'{"type":"text","part":{"type":"text","text":"done"}}\n'])
                 self.stderr = FakeStream([])
+                self.stdin = FakeStdIn()
 
             async def wait(self):
                 return 0
@@ -163,7 +178,8 @@ class TestLocalCLIProvider:
         async def fake_spawn(*args, **kwargs):
             captured["cmd"] = list(args)
             captured["kwargs"] = kwargs
-            return FakeProc(args[-1])
+            captured["proc"] = FakeProc()
+            return captured["proc"]
 
         monkeypatch.setattr(
             "app.agent.executor.providers.base_cli.asyncio.create_subprocess_exec",
@@ -184,12 +200,20 @@ class TestLocalCLIProvider:
         result = asyncio.run(run())
         assert result["status"] == "success"
         assert result["provider"] == "opencode_cli"
-        assert captured["cmd"][0].endswith("opencode")
+        assert os.path.basename(captured["cmd"][0]).startswith("opencode")
         assert captured["cmd"][1] == "run"
-        prompt = captured["cmd"][2]
-        assert "SYSTEM PROMPT" in prompt
-        assert "DO THE TASK" in prompt
-        assert "value" in prompt
+        # P0-1: prompt 不再作为命令行参数（多行会被 cmd.exe 截断）
+        argv = " ".join(captured["cmd"])
+        assert "SYSTEM PROMPT" not in argv
+        assert "DO THE TASK" not in argv
+        assert "value" not in argv
+        # P0-1: prompt 通过 stdin 写入（替代 DEVNULL）
+        assert captured["kwargs"]["stdin"] is not None
+        assert captured["kwargs"]["stdin"] != asyncio.subprocess.DEVNULL
+        stdin_data = captured["proc"].stdin.data.decode()
+        assert "SYSTEM PROMPT" in stdin_data
+        assert "DO THE TASK" in stdin_data
+        assert "value" in stdin_data
 
     def _run_with_fake_proc(self, stdout_chunks, stderr_chunks, monkeypatch):
         captured = {}
@@ -273,6 +297,62 @@ class TestLocalCLIProvider:
         assert "[tool:bash] echo hello" in out
         assert "step_start" not in out
         assert "step_finish" not in out
+
+
+    def test_empty_output_is_failure_not_success(self, monkeypatch):
+        """P0-2: CLI 退出码 0 但零输出 -> 必须判失败，不能伪装成功。"""
+        self._run_with_fake_proc([], [], monkeypatch)
+        executor = LocalCLIExecutor()
+        request = ExecutionRequest(
+            task={"prompt": "do it"},
+            config={"agent_provider": "opencode"},
+            timeout=5,
+        )
+        result = asyncio.run(executor.execute(request))
+        assert result.success is False
+        assert "no output" in (result.error or "")
+
+    def test_opencode_error_event_is_transparent_and_fails(self, monkeypatch):
+        """P2-1 + P0-2: opencode 只回 error 事件（如上游 401 包装）-> 失败且透传。"""
+        self._run_with_fake_proc(
+            [
+                b'{"type":"error","error":"UnknownError: Unexpected server error (ref: err_abc)"}\n',
+            ],
+            [],
+            monkeypatch,
+        )
+        executor = LocalCLIExecutor()
+        request = ExecutionRequest(
+            task={"prompt": "do it"},
+            config={"agent_provider": "opencode"},
+            timeout=5,
+        )
+        result = asyncio.run(executor.execute(request))
+        assert result.success is False
+        assert "UnknownError" in (result.error or "")
+        assert "err_abc" in (result.error or "")
+        assert result.output.get("stdout")  # error 事件对用户可见
+        assert "UnknownError" in result.output["stdout"]
+
+    def test_opencode_event_stats_in_metadata(self, monkeypatch):
+        self._run_with_fake_proc(
+            [
+                b'{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","title":"echo hi"}}}\n',
+                b'{"type":"text","part":{"type":"text","text":"RESULT"}}\n',
+            ],
+            [],
+            monkeypatch,
+        )
+        executor = LocalCLIExecutor()
+        request = ExecutionRequest(
+            task={"prompt": "do it"},
+            config={"agent_provider": "opencode"},
+            timeout=5,
+        )
+        result = asyncio.run(executor.execute(request))
+        assert result.success is True
+        assert result.metadata["event_stats"]["text"] == 1
+        assert result.metadata["event_stats"]["tool_use"] == 1
 
 
 # ---------------------------------------------------------------------------

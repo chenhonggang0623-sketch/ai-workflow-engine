@@ -124,7 +124,7 @@ async def test_list_filters(mgr, mock_db):
     scalars_result.all.return_value = ["a", "b"]
     mock_db._make_execute_result(scalars=MagicMock(return_value=scalars_result))
 
-    result = await mgr.list(execution_id=eid, type="code")
+    result = await mgr.list_artifacts(execution_id=eid, type="code")
     assert result == ["a", "b"]
 
 

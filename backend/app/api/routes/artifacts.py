@@ -19,7 +19,7 @@ async def list_artifacts(
     db: AsyncSession = Depends(get_db),
 ):
     mgr = ArtifactManager(db, settings.storage_path)
-    artifacts = await mgr.list(
+    artifacts = await mgr.list_artifacts(
         execution_id=execution_id,
         node_id=node_id,
         type=type,

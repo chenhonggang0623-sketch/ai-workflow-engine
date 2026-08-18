@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.supervisor.evaluation import EvaluationEngine
 from app.supervisor.quality_gate import QualityGate
@@ -218,16 +219,26 @@ class SupervisorOrchestrator:
         }
 
     async def _load_execution(self, execution_id: uuid.UUID) -> dict | None:
-        stmt = select(Execution).where(Execution.id == execution_id)
+        # 必须 eager load workflow：async 上下文里惰性访问 execution.workflow
+        # 会抛 MissingGreenlet（见 EXECUTION_PROBLEMS.md P1-1）。
+        stmt = (
+            select(Execution)
+            .options(selectinload(Execution.workflow))
+            .where(Execution.id == execution_id)
+        )
         row = await self.db.execute(stmt)
         execution = row.scalar_one_or_none()
         if not execution:
             return None
+        workflow = execution.workflow
+        nodes = []
+        if workflow is not None and isinstance(workflow.definition, dict):
+            nodes = workflow.definition.get("nodes", []) or []
         return {
             "id": str(execution.id),
             "workflow_id": str(execution.workflow_id) if execution.workflow_id else None,
             "status": execution.status,
-            "nodes": (execution.workflow.nodes if execution.workflow else []) if hasattr(execution, "workflow") else [],
+            "nodes": nodes,
             "context": execution.context or {},
         }
 

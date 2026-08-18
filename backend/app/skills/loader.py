@@ -106,7 +106,7 @@ def load_skill(skills_root: str, skill_id: str) -> SkillMeta | None:
             if n == SKILL_MD_NAME and root == skill_dir:
                 continue
             rel = os.path.relpath(os.path.join(root, n), skill_dir)
-            files.append(rel)
+            files.append(rel.replace("\\", "/"))
 
     return SkillMeta(
         name=name,

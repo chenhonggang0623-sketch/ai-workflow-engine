@@ -14,7 +14,7 @@ async def list_agents(
     db: AsyncSession = Depends(get_db),
 ):
     registry = AgentRegistry(db)
-    agents = await registry.list(status=status)
+    agents = await registry.list_agents(status=status)
     return agents
 
 

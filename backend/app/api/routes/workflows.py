@@ -2,6 +2,7 @@ import asyncio
 import copy
 import logging
 import os
+import uuid
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -21,6 +22,7 @@ from app.schemas.workflow import WorkflowCreate, WorkflowUpdate, WorkflowRespons
 from app.engine.types import WorkflowDefinition, NodeDefinition, EdgeDefinition
 from app.engine.dag_validator import validate_dag, resolve_dag_limits
 from app.engine.execution_manager import ExecutionManager
+from app.planner.workspace import build_project_path, inject_workspace, strip_workspace
 
 router = APIRouter()
 
@@ -214,6 +216,16 @@ async def execute_workflow(
         initial_context = {}
 
     definition = workflow.definition
+    # P1-2: 工作目录必须按 execution 隔离，不能复用 workflow.definition 里
+    # 第一次执行烘焙的项目路径。先剥离旧注入，再按本次 execution_id 生成新目录。
+    definition = strip_workspace(definition)
+    execution_id = uuid.uuid4()
+    project_path = build_project_path(
+        settings.project_root_abs, workflow.name, execution_id
+    )
+    os.makedirs(project_path, exist_ok=True)
+    definition = inject_workspace(definition, project_path)
+
     wf_def = WorkflowDefinition(
         name=workflow.name,
         description=workflow.description,
@@ -232,18 +244,18 @@ async def execute_workflow(
         )
 
     execution = Execution(
+        id=execution_id,
         workflow_id=id,
         status="running",
         context={
             **initial_context,
             "workflow_definition": definition,
+            "project_path": project_path,
         },
     )
     db.add(execution)
     await db.flush()
     await db.refresh(execution)
-
-    execution_id = execution.id
 
     async def _run():
         try:
@@ -260,7 +272,13 @@ async def execute_workflow(
                 if exe:
                     exe.status = result.status.value
                     exe.finished_at = result.finished_at
-                    exe.context = result.context
+                    # 合并保留 project_path / workflow_definition（result.context
+                    # 是运行时上下文，会覆盖掉这两项关键元数据）
+                    exe.context = {
+                        "workflow_definition": definition,
+                        "project_path": project_path,
+                        **result.context,
+                    }
                     await session.commit()
         except Exception:
             async with async_session_factory() as session:

@@ -107,7 +107,7 @@ Then open http://localhost:8080 → **+ New Project** → paste a requirement �
 
 ```bash
 cd backend
-python3 -m pytest tests/ -q    # 439 tests
+python3 -m pytest tests/ -q    # 444 tests (2026-08-18 full app-load verified)
 cd ../frontend && npx tsc --noEmit && npx next build
 ```
 
@@ -129,12 +129,12 @@ cd ../frontend && npx tsc --noEmit && npx next build
 ```
 ├── backend/            # FastAPI + SQLAlchemy + planner + engine
 │   ├── app/
-│   ├── tests/          # 439 tests
+│   ├── tests/          # 444 tests
 │   └── pyproject.toml
 ├── frontend/           # Next.js console
 ├── skills/             # methodology skills (TDD, code review, …)
 ├── docs/               # design docs (EN)
-├── docker-compose.yml  # postgres / redis / qdrant
+├── docker-compose.yml  # postgres / redis
 ├── start.sh            # one-command launch
 └── test.sh
 ```

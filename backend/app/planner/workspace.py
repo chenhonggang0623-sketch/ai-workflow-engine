@@ -68,6 +68,31 @@ def inject_skills(project_path: str, skill_ids: list[str],
     return injected
 
 
+def strip_workspace(plan: dict) -> dict:
+    """Deep-copy the plan and remove previously injected workspace config.
+
+    清理 agent 节点上由 inject_workspace 写入的 working_directory / 路径提示，
+    使同一 workflow 的多次执行能各自注入独立工作目录（见 EXECUTION_PROBLEMS.md
+    P1-2），并兼容历史数据（旧 definition 里已烘焙第一次执行的项目路径）。
+    """
+    updated = copy.deepcopy(plan)
+    for node in updated.get("nodes", []):
+        if node.get("type") != "agent":
+            continue
+        config = node.get("config")
+        if not isinstance(config, dict):
+            continue
+        config.pop("working_directory", None)
+        ec = config.get("executor_config")
+        if isinstance(ec, dict):
+            ec.pop("working_directory", None)
+        system_prompt = config.get("system_prompt")
+        if isinstance(system_prompt, str) and "\n\nWorking directory: " in system_prompt:
+            idx = system_prompt.find("\n\nWorking directory: ")
+            config["system_prompt"] = system_prompt[:idx]
+    return updated
+
+
 def inject_workspace(plan: dict, project_path: str, skills_root: str | None = None) -> dict:
     """Deep-copy the plan and inject the workspace into every coding agent node.
 

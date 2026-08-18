@@ -14,6 +14,7 @@ from app.agent.executor.types import ExecutionRequest, ExecutionResult
 from app.agent.executor.router import ExecutorRouter
 from app.engine.context_service import ContextService, DEFAULT_MAX_CONTEXT_CHARS
 from app.engine.prompt_factory import build_node_prompt
+from app.engine.safe_eval import safe_eval
 
 
 def _resolve_jsonpath(obj: dict, path: str):
@@ -181,6 +182,8 @@ class NodeRunner:
             if not result.success:
                 raise RuntimeError(result.error)
             output = result.output or {}
+            if not isinstance(output, dict):
+                output = {"result": output}
             if result.metadata:
                 output["_executor_metadata"] = result.metadata
             return output
@@ -208,7 +211,7 @@ class NodeRunner:
         if not expr:
             return {"condition_result": True}
         try:
-            result = eval(expr, {"__builtins__": {}}, {**node_input, **(ctx or {})})
+            result = safe_eval(expr, {**node_input, **(ctx or {})})
             return {"condition_result": result}
         except Exception as exc:
             raise RuntimeError(f"Condition eval failed: {exc}") from exc

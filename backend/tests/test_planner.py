@@ -93,9 +93,9 @@ class TestPlannerAgent:
             "usage": {"prompt_tokens": 50, "completion_tokens": 50},
         })
         agent_registry = AsyncMock()
-        agent_registry.list = AsyncMock(return_value=[])
+        agent_registry.list_agents = AsyncMock(return_value=[])
         tool_registry = MagicMock()
-        tool_registry.list = MagicMock(return_value=[])
+        tool_registry.list_tools = MagicMock(return_value=[])
         return PlannerAgent(llm, agent_registry, tool_registry)
 
     @pytest.mark.asyncio

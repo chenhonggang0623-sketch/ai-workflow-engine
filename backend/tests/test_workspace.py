@@ -6,6 +6,7 @@ from app.planner.workspace import (
     slugify,
     build_project_path,
     inject_workspace,
+    strip_workspace,
     inject_skills,
 )
 
@@ -111,6 +112,46 @@ def test_inject_workspace_empty_nodes():
         "nodes": [],
         "edges": [],
     }
+
+
+def test_strip_workspace_removes_injected_paths():
+    eid = uuid.uuid4()
+    path1 = build_project_path("/tmp/projects", "Blog System", eid)
+    injected = inject_workspace(_plan(), path1)
+
+    eid2 = uuid.uuid4()
+    path2 = build_project_path("/tmp/projects", "Blog System", eid2)
+    stripped = strip_workspace(injected)
+    plan = inject_workspace(stripped, path2)
+
+    be_config = plan["nodes"][1]["config"]
+    assert be_config["working_directory"] == path2
+    assert be_config["executor_config"]["working_directory"] == path2
+    assert path1 not in be_config["system_prompt"]
+    assert path2 in be_config["system_prompt"]
+    assert be_config["system_prompt"].count("Working directory:") == 1
+
+
+def test_strip_workspace_keeps_other_config():
+    plan = _plan()
+    eid = uuid.uuid4()
+    path = build_project_path("/tmp/projects", "Blog System", eid)
+    injected = inject_workspace(plan, path)
+    stripped = strip_workspace(injected)
+
+    assert "working_directory" not in stripped["nodes"][1]["config"]
+    assert "Working directory" not in stripped["nodes"][1]["config"]["system_prompt"]
+    assert stripped["nodes"][1]["config"]["provider"] == "opencode_cli"
+    assert "executor_type" in stripped["nodes"][1]["config"]
+    assert stripped["nodes"][0]["config"]["system_prompt"] == "Analyze requirements."
+
+
+def test_strip_workspace_does_not_mutate_original():
+    eid = uuid.uuid4()
+    path = build_project_path("/tmp/projects", "Blog System", eid)
+    injected = inject_workspace(_plan(), path)
+    strip_workspace(injected)
+    assert injected["nodes"][1]["config"]["working_directory"] == path
 
 
 class TestInjectSkills:

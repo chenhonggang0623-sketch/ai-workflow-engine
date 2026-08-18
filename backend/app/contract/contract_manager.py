@@ -62,7 +62,7 @@ class ContractManager:
         )
         return result.scalar_one_or_none()
 
-    async def list(
+    async def list_contracts(
         self,
         executor_id: str | None = None,
         status: str | None = None,

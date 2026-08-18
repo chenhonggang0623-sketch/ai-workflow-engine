@@ -104,7 +104,7 @@ class TestSlowNodeMarking:
         await started.wait()
         await asyncio.sleep(1.3)
         assert "n1" in mgr.slow_nodes(exec_id)
-        mgr.intervene(exec_id, "n1", "wait")
+        await mgr.intervene(exec_id, "n1", "wait")
         assert mgr.slow_nodes(exec_id) == {}
         release.set()
         await task
@@ -134,7 +134,7 @@ class TestSwitchModelIntervention:
         )
         await started.wait()
         await asyncio.sleep(0.2)
-        mgr.intervene(exec_id, "n1", "switch_model", provider="openai")
+        await mgr.intervene(exec_id, "n1", "switch_model", provider="openai")
         release.set()
         result = await task
         assert result.status == ExecutionStatus.SUCCEEDED
@@ -165,7 +165,7 @@ class TestSwitchModelIntervention:
         )
         await started.wait()
         await asyncio.sleep(0.1)
-        mgr.intervene(exec_id, "n1", "switch_model", provider="claude_cli", model="claude-sonnet")
+        await mgr.intervene(exec_id, "n1", "switch_model", provider="claude_cli", model="claude-sonnet")
         release.set()
         result = await task
         assert result.status == ExecutionStatus.SUCCEEDED
@@ -190,7 +190,7 @@ class TestTerminateIntervention:
         )
         await started.wait()
         await asyncio.sleep(0.1)
-        mgr.intervene(exec_id, "n1", "terminate")
+        await mgr.intervene(exec_id, "n1", "terminate")
         result = await task
         assert result.status == ExecutionStatus.CANCELLED
 

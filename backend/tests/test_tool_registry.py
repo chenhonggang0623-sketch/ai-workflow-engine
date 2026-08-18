@@ -23,7 +23,7 @@ class TestToolRegistry:
             registry.register(tool)
 
     def test_list_builtins(self, registry):
-        tools = registry.list()
+        tools = registry.list_tools()
         ids = [t.id for t in tools]
         assert "shell" in ids
         assert "file_read" in ids
@@ -54,8 +54,9 @@ class TestToolRegistry:
         with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
             f.write("hello world")
             f.flush()
-            result = await registry.execute("file_read", {"path": f.name})
-            os.unlink(f.name)
+            fpath = f.name
+        os.unlink(fpath)
+        result = await registry.execute("file_read", {"path": fpath})
         assert result["result"] == "hello world"
 
     @pytest.mark.asyncio

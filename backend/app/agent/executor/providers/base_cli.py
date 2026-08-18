@@ -17,6 +17,13 @@ _ANSI_RE = re.compile(r"\x1b(?:\[[0-9;?]*[a-zA-Z]|\][^\x07]*(?:\x07|\x1b\\))")
 class BaseCLIExecutor(BaseExecutor):
     command: str = ""
     args_template: list[str] = []
+    # 多行 prompt 以命令行参数传递时，在 Windows 会被 cmd.exe 截断（.CMD shim
+    # 在第一个换行符处截断），导致 agent 空转。置 True 时 prompt 改走 stdin，
+    # 跨平台安全。见 EXECUTION_PROBLEMS.md P0-1。
+    prompt_via_stdin: bool = False
+    # 成功判定要求至少产出非空输出，避免"静默失败"（空回复 / 模型没干活）
+    # 伪装成成功。见 EXECUTION_PROBLEMS.md P0-2。
+    require_output: bool = True
 
     def _task_text(self, request: ExecutionRequest) -> str:
         task = request.task or {}
@@ -51,6 +58,32 @@ class BaseCLIExecutor(BaseExecutor):
         cleaned = self._strip_ansi(text)
         return cleaned if cleaned else None
 
+    def _begin_execution(self, request: ExecutionRequest) -> None:
+        """Provider hook: reset any per-execution state before spawning."""
+
+    def _validate_output(
+        self, stdout_lines: list[str], stderr_lines: list[str],
+        request: ExecutionRequest,
+    ) -> tuple[bool, str | None]:
+        """Decide whether the captured output counts as a real response.
+
+        Returns (ok, reason). Default: non-empty stdout required.
+        """
+        if not self.require_output:
+            return True, None
+        if stdout_lines:
+            return True, None
+        stderr_text = "\n".join(stderr_lines)
+        reason = (
+            "CLI exited 0 but produced no output "
+            f"(silent failure, no task was performed). stderr: {stderr_text[:500]}"
+        )
+        return False, reason
+
+    def _success_metadata(self) -> dict:
+        """Provider hook: extra metadata to attach on success."""
+        return {}
+
     async def _read_stream(self, stream, sink: list[str], tag: str,
                            log_sink=None) -> None:
         while True:
@@ -82,13 +115,21 @@ class BaseCLIExecutor(BaseExecutor):
         command = self.resolve_command() or self.command
         resolved = shutil.which(command) or command
         cmd = [resolved] + args
-        logger.info("Executing CLI: %s (cwd=%s, timeout=%s)", " ".join(cmd), cwd, timeout)
+        # P2-2: 完整 prompt（含需求/系统提示词）不落日志，只打命令头（截断）。
+        logger.info("Executing CLI: %s (cwd=%s, timeout=%s)",
+                    " ".join(cmd)[:300], cwd, timeout)
+
+        stdin_mode = (
+            asyncio.subprocess.PIPE if self.prompt_via_stdin
+            else asyncio.subprocess.DEVNULL
+        )
+        self._begin_execution(request)
 
         try:
             proc = await asyncio.create_subprocess_exec(
                 resolved,
                 *args,
-                stdin=asyncio.subprocess.DEVNULL,
+                stdin=stdin_mode,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
@@ -112,6 +153,28 @@ class BaseCLIExecutor(BaseExecutor):
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
         log_sink = getattr(request, "log_sink", None)
+
+        # P0-1: 多行 prompt 通过 stdin 传给 CLI（替代 DEVNULL），绕开 cmd.exe
+        # 对命令行参数的换行截断。stdin 写入放在后台任务，避免管道缓冲死锁。
+        prompt_task = None
+        if self.prompt_via_stdin:
+            stdin = getattr(proc, "stdin", None)
+
+            async def _write_prompt() -> None:
+                if stdin is None:
+                    return
+                try:
+                    stdin.write(prompt.encode("utf-8"))
+                    await stdin.drain()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                finally:
+                    try:
+                        stdin.close()
+                    except Exception:
+                        pass
+
+            prompt_task = asyncio.ensure_future(_write_prompt())
 
         def _kill_process_group() -> None:
             # CLI grandchildren (dev servers etc.) keep stdout/stderr pipes
@@ -170,6 +233,12 @@ class BaseCLIExecutor(BaseExecutor):
                     _flush_remaining(proc.stdout, stdout_lines, "stdout", log_sink),
                     _flush_remaining(proc.stderr, stderr_lines, "stderr", log_sink),
                 )
+                if prompt_task is not None:
+                    # 确保 stdin 已写入（CLI 可能快速退出导致写入任务还没跑）
+                    try:
+                        await asyncio.wait_for(prompt_task, timeout=10)
+                    except Exception:
+                        pass
 
         async def _cleanup() -> None:
             for stream in (proc.stdout, proc.stderr):
@@ -189,6 +258,8 @@ class BaseCLIExecutor(BaseExecutor):
         except asyncio.TimeoutError:
             _kill_process_group()
             await _cleanup()
+            if prompt_task is not None:
+                prompt_task.cancel()
             return ExecutionResult(
                 success=False,
                 error=f"CLI execution timed out after {timeout}s",
@@ -200,24 +271,48 @@ class BaseCLIExecutor(BaseExecutor):
         except asyncio.CancelledError:
             _kill_process_group()
             await _cleanup()
+            if prompt_task is not None:
+                prompt_task.cancel()
             raise
         except Exception as exc:
             logger.exception("CLI execution failed")
             return ExecutionResult(success=False, error=str(exc))
 
         if proc.returncode != 0:
+            stderr_text = "\n".join(stderr_lines)
+            # P2-1: 非零退出时透传 stderr；stderr 为空时附带 stdout 尾部，
+            # 避免上游错误（如 401 包装成 UnknownError）完全不可见。
+            detail = stderr_text
+            if not detail:
+                detail = "\n".join(stdout_lines[-5:])
             return ExecutionResult(
                 success=False,
-                error=f"CLI exited with code {proc.returncode}: {'\n'.join(stderr_lines)}",
+                error=f"CLI exited with code {proc.returncode}: {detail}",
                 output={
                     "stdout": "\n".join(stdout_lines),
-                    "stderr": "\n".join(stderr_lines),
+                    "stderr": stderr_text,
                 },
             )
 
         output_text = "\n".join(stdout_lines)
+        # P0-2: 空输出不得伪装成成功
+        ok, reason = self._validate_output(stdout_lines, stderr_lines, request)
+        if not ok:
+            return ExecutionResult(
+                success=False,
+                error=reason,
+                output={
+                    "stdout": output_text,
+                    "stderr": "\n".join(stderr_lines),
+                },
+                metadata={"return_code": proc.returncode},
+            )
+        metadata = {"return_code": proc.returncode}
+        extra = self._success_metadata()
+        if extra:
+            metadata.update(extra)
         return ExecutionResult(
             success=True,
             output={"output": output_text, "stdout": output_text},
-            metadata={"return_code": proc.returncode},
+            metadata=metadata,
         )

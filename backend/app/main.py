@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router as api_router
 from app.api.websocket.handlers import execution_ws, agent_messages_ws, manager
 from app.core.db import engine, Base, async_session_factory
-from app.core.redis import init_redis, close_redis
+from app.core.redis import init_redis, close_redis, get_redis
 from app.core.app_config import config_store
 from app.agent.registry import AgentRegistry
 from app.agent.runtime import AgentExecutor, register_builtin_agents
@@ -29,6 +29,8 @@ from app.engine.node_runner import NodeRunner
 from app.engine.execution_manager import ExecutionManager
 from app.engine.context_service import ContextService
 from app.mcp.tool_registry import ToolRegistry
+
+logger = logging.getLogger(__name__)
 
 
 def _setup_logging() -> None:
@@ -54,12 +56,12 @@ async def lifespan(app: FastAPI):
             await register_builtin_agents(registry)
             await session.commit()
     except Exception:
-        pass
+        logger.exception("Failed to initialize database schema / builtin agents")
 
     try:
         await init_redis()
     except Exception:
-        pass
+        logger.exception("Failed to initialize Redis")
 
     try:
         async with async_session_factory() as session:
@@ -128,6 +130,7 @@ async def lifespan(app: FastAPI):
         node_runner=node_runner,
         max_concurrency=5,
         context_service=context_service,
+        redis_client=get_redis(),
     )
     exec_mgr.set_event_callback(
         lambda execution_id, message: manager.broadcast_execution(execution_id, message)

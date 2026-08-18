@@ -35,7 +35,7 @@ class ToolRegistry:
     def get(self, tool_id: str) -> ToolDefinition | None:
         return self._tools.get(tool_id)
 
-    def list(self) -> list[ToolDefinition]:
+    def list_tools(self) -> list[ToolDefinition]:
         return list(self._tools.values())
 
     async def execute(self, tool_id: str, params: dict) -> dict:

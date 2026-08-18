@@ -101,7 +101,7 @@ cp backend/.env.example backend/.env   # 如有 key 可编辑
 
 ```bash
 cd backend
-python3 -m pytest tests/ -q    # 439 个测试
+python3 -m pytest tests/ -q    # 444 个测试（2026-08-18 完整应用加载验证）
 cd ../frontend && npx tsc --noEmit && npx next build
 ```
 
@@ -121,12 +121,12 @@ cd ../frontend && npx tsc --noEmit && npx next build
 ```
 ├── backend/            # FastAPI + SQLAlchemy + planner + engine
 │   ├── app/
-│   ├── tests/          # 439 个测试
+│   ├── tests/          # 444 个测试
 │   └── pyproject.toml
 ├── frontend/           # Next.js 控制台
 ├── skills/             # 方法论技能（TDD、代码审查…）
 ├── docs/               # 设计文档（中英双语）
-├── docker-compose.yml  # postgres / redis / qdrant
+├── docker-compose.yml  # postgres / redis
 ├── start.sh            # 一键启动
 └── test.sh
 ```

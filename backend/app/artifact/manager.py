@@ -100,7 +100,7 @@ class ArtifactManager:
         with open(abs_path, mode) as f:
             return f.read()
 
-    async def list(
+    async def list_artifacts(
         self,
         execution_id: UUID | None = None,
         node_id: str | None = None,

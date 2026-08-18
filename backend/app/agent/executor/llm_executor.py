@@ -75,7 +75,7 @@ class LLMExecutor(BaseExecutor):
             {"role": "user", "content": user_content},
         ]
 
-        tool_defs = self._tools.list() if self._tools else []
+        tool_defs = self._tools.list_tools() if self._tools else []
         openai_tools = []
         for td in tool_defs:
             if td.schema:

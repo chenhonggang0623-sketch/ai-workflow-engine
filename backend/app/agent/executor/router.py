@@ -1,5 +1,7 @@
 import logging
 
+from pydantic import ValidationError
+
 from app.agent.executor.base import BaseExecutor
 from app.agent.executor.types import ExecutorType, ExecutionRequest, ExecutionResult
 from app.agent.executor.llm_executor import LLMExecutor
@@ -79,7 +81,29 @@ class ExecutorRouter:
     ) -> ExecutionResult:
         config = request.config or {}
         provider_name = self.resolve_provider_name(config)
+        try:
+            return await self._dispatch(executor_type, request, config, provider_name)
+        except ValidationError as exc:
+            logger.warning(
+                "Invalid ExecutionResult from provider '%s': %s",
+                provider_name or executor_type,
+                exc,
+            )
+            return ExecutionResult(
+                success=False,
+                error=(
+                    f"Provider '{provider_name or executor_type}' returned an "
+                    f"invalid result (output must be a JSON object): {exc.errors()[0]['msg'] if exc.errors() else exc}"
+                ),
+            )
 
+    async def _dispatch(
+        self,
+        executor_type: str | ExecutorType,
+        request: ExecutionRequest,
+        config: dict,
+        provider_name: str | None,
+    ) -> ExecutionResult:
         if provider_name and self._provider_registry is not None:
             provider = self._provider_registry.get(provider_name)
             if provider is None:
@@ -120,7 +144,7 @@ class ExecutorRouter:
             return ExecutionResult(
                 success=False,
                 error=result.get("error") or "Agent provider execution failed",
-                output=result.get("output") or {},
+                output=self._coerce_output(result.get("output")),
             )
         metadata = {
             "provider": result.get("provider"),
@@ -132,6 +156,19 @@ class ExecutorRouter:
             metadata["ensemble"] = result["ensemble"]
         return ExecutionResult(
             success=True,
-            output=result.get("output") or {},
+            output=self._coerce_output(result.get("output")),
             metadata=metadata,
         )
+
+    @staticmethod
+    def _coerce_output(output) -> dict:
+        """输出协议归一化：所有 provider 的输出必须是 JSON object。
+
+        裸字符串 / 标量 / 列表统一包装为 {"result": <value>}，
+        保证下游 _apply_output_mapping 与 _executor_metadata 注入安全。
+        """
+        if output is None:
+            return {}
+        if isinstance(output, dict):
+            return output
+        return {"result": output}

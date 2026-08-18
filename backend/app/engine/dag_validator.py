@@ -303,7 +303,9 @@ def ensure_dag_connected(workflow: dict) -> dict:
     3. 依次把主链末尾（拓扑序最后节点）与下一分量的入口连边，
        形成单条弱连通 DAG，且不会引入环。
 
-    返回修复后的 workflow（副本，不修改入参）。
+    返回修复后的 workflow（副本，不修改入参）。若发生了自动补边，
+    会在返回的 workflow["warnings"] 中追加审计记录
+    （{type: "dag_auto_connected", added_edges: [...]}），供前端展示 / 规划反馈。
     """
     nodes = list(workflow.get("nodes", []) or [])
     edges = [dict(e) for e in (workflow.get("edges", []) or [])]
@@ -364,15 +366,32 @@ def ensure_dag_connected(workflow: dict) -> dict:
     main_comp = components[0]
     main_order = _component_order(main_comp)
     tail = main_order[-1]
-    added = 0
+    added_edges: list[dict] = []
     for comp in components[1:]:
         comp_order = _component_order(comp)
         head = comp_order[0]
-        edges.append({"source": tail, "target": head, "label": "ordered"})
-        added += 1
+        edge = {"source": tail, "target": head, "label": "ordered"}
+        edges.append(edge)
+        added_edges.append(edge)
         tail = comp_order[-1]
 
-    if added:
-        logger.info("ensure_dag_connected: linked %d disconnected component(s)", added)
+    if added_edges:
+        logger.info(
+            "ensure_dag_connected: linked %d disconnected component(s)",
+            len(added_edges),
+        )
+        warnings = list(workflow.get("warnings") or [])
+        warnings.append(
+            {
+                "type": "dag_auto_connected",
+                "detail": (
+                    f"DAG had {len(added_edges)} disconnected component(s); "
+                    "auto-linked them into the main chain in component order. "
+                    "These edges carry no planning semantics."
+                ),
+                "added_edges": added_edges,
+            }
+        )
+        return {**workflow, "nodes": nodes, "edges": edges, "warnings": warnings}
 
     return {**workflow, "nodes": nodes, "edges": edges}

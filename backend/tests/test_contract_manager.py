@@ -90,7 +90,7 @@ class TestContractManager:
         scalars.scalars.return_value.all.return_value = [sample_contract]
         mock_db.execute.return_value = scalars
 
-        results = await manager.list(executor_id="agent-1")
+        results = await manager.list_contracts(executor_id="agent-1")
         assert len(results) == 1
         assert results[0].executor_id == "agent-1"
 
@@ -100,7 +100,7 @@ class TestContractManager:
         scalars.scalars.return_value.all.return_value = [sample_contract]
         mock_db.execute.return_value = scalars
 
-        results = await manager.list(status="pending")
+        results = await manager.list_contracts(status="pending")
         assert len(results) == 1
 
     @pytest.mark.asyncio
@@ -246,7 +246,7 @@ class TestContractManager:
         scalars.scalars.return_value.all.return_value = [sample_contract]
         mock_db.execute.return_value = scalars
 
-        results = await manager.list()
+        results = await manager.list_contracts()
         assert len(results) == 1
 
     @pytest.mark.asyncio

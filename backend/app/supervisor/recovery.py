@@ -92,7 +92,7 @@ class RecoveryManager:
 
     async def _find_alternative(self, agent_id: str) -> str | None:
         try:
-            agents = await self._registry.list(status="active")
+            agents = await self._registry.list_agents(status="active")
             candidates = [a["id"] for a in agents if a["id"] != agent_id]
             return candidates[0] if candidates else None
         except Exception as e:

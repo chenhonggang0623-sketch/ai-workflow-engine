@@ -68,7 +68,7 @@ def _walk_project(project_path: str) -> list[dict]:
         dirs.sort()
         for name in sorted(names):
             abs_path = os.path.join(root, name)
-            rel_path = os.path.relpath(abs_path, project_path)
+            rel_path = os.path.relpath(abs_path, project_path).replace("\\", "/")
             try:
                 size = os.path.getsize(abs_path)
             except OSError:
@@ -159,8 +159,8 @@ async def intervene_execution(id: UUID, body: NodeIntervention, request: Request
                               db: AsyncSession = Depends(get_db)):
     exec_mgr: ExecutionManager = request.app.state.execution_manager
     try:
-        exec_mgr.intervene(id, body.node_id, body.action,
-                           provider=body.provider, model=body.model)
+        await exec_mgr.intervene(id, body.node_id, body.action,
+                                 provider=body.provider, model=body.model)
     except ValueError as e:
         raise HTTPException(404, str(e))
     if body.action == "terminate":

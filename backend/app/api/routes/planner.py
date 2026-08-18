@@ -15,7 +15,7 @@ from app.mcp.tool_registry import ToolRegistry
 from app.planner.planner_agent import PlannerAgent
 from app.planner.architect import Architect
 from app.planner.replan_coordinator import ReplanCoordinator
-from app.planner.workspace import build_project_path, inject_workspace
+from app.planner.workspace import build_project_path, inject_workspace, strip_workspace
 from app.schemas.planner import PlanRequest, PlanResponse, PlanConfirm
 from app.engine.types import WorkflowDefinition, NodeDefinition, EdgeDefinition
 from app.engine.execution_manager import ExecutionManager
@@ -112,10 +112,14 @@ async def confirm_plan(body: PlanConfirm, request: Request, db: AsyncSession = D
         edges=[EdgeDefinition(**e) for e in plan.get("edges", [])],
     )
 
+    # P1-2: workflow.definition 存"干净"版本（不含工作目录），工作目录是
+    # execution 级属性；若把第一次执行的项目路径烘焙进 definition，
+    # 后续复跑/并发执行会复用并污染同一目录。
+    clean_definition = strip_workspace(body.modifications or {})
     workflow = Workflow(
         name=wf_def.name,
         description=wf_def.description,
-        definition=plan,
+        definition=clean_definition,
     )
     db.add(workflow)
     await db.flush()

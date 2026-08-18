@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from datetime import UTC, datetime
 from typing import Awaitable, Callable
@@ -111,8 +112,18 @@ class NodeLogSink:
 
 
 class ExecutionManager:
+    """执行控制面：内存为运行时工作集，Redis 为权威持久副本（双写）。
+
+    控制状态（取消 / 干预 / 慢节点标记）同时写入 Redis，进程重启后可通过
+    _restore_control_state 恢复；执行结束时清理内存与 Redis key（TTL 双保险）。
+    Redis 不可用时自动降级为纯内存（保持原有行为）。
+    """
+
+    CONTROL_TTL_SECONDS = 86400
+
     def __init__(self, node_runner: NodeRunner, max_concurrency: int = 5,
-                 context_service: ContextService | None = None):
+                 context_service: ContextService | None = None,
+                 redis_client=None):
         self._node_runner = node_runner
         self._max_concurrency = max_concurrency
         self._cancel_events: dict[UUID, asyncio.Event] = {}
@@ -125,6 +136,26 @@ class ExecutionManager:
         self._slow_notified: dict[UUID, set[str]] = {}
         self._slow_after = settings.slow_node_after_seconds
         self._event_cb: Callable[[UUID, dict], Awaitable[None]] | None = None
+        self._redis = redis_client
+
+    def _rkey(self, execution_id: UUID, suffix: str) -> str:
+        return f"exec:control:{execution_id}:{suffix}"
+
+    async def _redis_call(self, method: str, *args, **kwargs):
+        if self._redis is None:
+            return None
+        try:
+            fn = getattr(self._redis, method)
+            return await fn(*args, **kwargs)
+        except Exception:
+            logger.debug("Redis control-plane operation failed", exc_info=True)
+            return None
+
+    async def _clear_control_state(self, execution_id: UUID) -> None:
+        suffixes = ("cancelled", "slow", "slow_notified", "interventions")
+        await self._redis_call(
+            "delete", *[self._rkey(execution_id, s) for s in suffixes]
+        )
 
     def set_event_callback(self, cb: Callable[[UUID, dict], Awaitable[None]]) -> None:
         """注册实时事件回调（如 WebSocket 广播）：回调签名 (execution_id, message)。"""
@@ -150,30 +181,51 @@ class ExecutionManager:
             for nid, since in (self._slow_since.get(execution_id) or {}).items()
         }
 
-    def intervene(self, execution_id: UUID, node_id: str, action: str,
-                  provider: str | None = None, model: str | None = None) -> None:
+    async def intervene(self, execution_id: UUID, node_id: str, action: str,
+                        provider: str | None = None, model: str | None = None) -> None:
         """用户干预请求：wait 清除慢标记；switch_model 取消节点并按新 provider/model 重排；
-        terminate 取消整个执行。"""
+        terminate 取消整个执行。请求同时写入 Redis（重启后可恢复）。"""
         if action == "wait":
-            self._ack_slow(execution_id, node_id)
+            await self._ack_slow(execution_id, node_id)
             return
         if action == "terminate":
             self._cancel_events.get(execution_id, asyncio.Event()).set()
+            await self._mark_cancelled(execution_id)
             return
         if action == "switch_model":
-            self._interventions.setdefault(execution_id, {})[node_id] = {
+            payload = {
                 "action": action,
                 "provider": provider,
                 "model": model,
             }
+            self._interventions.setdefault(execution_id, {})[node_id] = payload
             self._intervention_events.setdefault(execution_id, asyncio.Event()).set()
+            key = self._rkey(execution_id, "interventions")
+            await self._redis_call(
+                "hset", key, node_id, json.dumps(payload)
+            )
+            await self._redis_call("expire", key, self.CONTROL_TTL_SECONDS)
 
-    def _ack_slow(self, execution_id: UUID, node_id: str) -> None:
+    async def _mark_cancelled(self, execution_id: UUID) -> None:
+        self._cancelled.add(execution_id)
+        await self._redis_call(
+            "set",
+            self._rkey(execution_id, "cancelled"),
+            "1",
+            ex=self.CONTROL_TTL_SECONDS,
+        )
+
+    async def _ack_slow(self, execution_id: UUID, node_id: str) -> None:
         self._slow_since.get(execution_id, {}).pop(node_id, None)
         self._slow_notified.get(execution_id, set()).discard(node_id)
+        key = self._rkey(execution_id, "slow")
+        await self._redis_call("hdel", key, node_id)
+        await self._redis_call(
+            "srem", self._rkey(execution_id, "slow_notified"), node_id
+        )
 
-    def _mark_slow_if_needed(self, execution_id: UUID, node_id: str,
-                             started_at: datetime) -> None:
+    async def _mark_slow_if_needed(self, execution_id: UUID, node_id: str,
+                                   started_at: datetime) -> None:
         elapsed = (datetime.now(UTC).replace(tzinfo=None) - started_at).total_seconds()
         if elapsed < self._slow_after:
             return
@@ -181,6 +233,33 @@ class ExecutionManager:
             return
         self._slow_since.setdefault(execution_id, {})[node_id] = started_at
         self._slow_notified.setdefault(execution_id, set()).add(node_id)
+        key = self._rkey(execution_id, "slow")
+        await self._redis_call("hset", key, node_id, started_at.isoformat())
+        await self._redis_call("expire", key, self.CONTROL_TTL_SECONDS)
+        nkey = self._rkey(execution_id, "slow_notified")
+        await self._redis_call("sadd", nkey, node_id)
+        await self._redis_call("expire", nkey, self.CONTROL_TTL_SECONDS)
+
+    async def _restore_control_state(self, execution_id: UUID) -> None:
+        """进程重启后从 Redis 恢复控制面状态（取消记忆 / 慢节点标记）。"""
+        if self._redis is None:
+            return
+        try:
+            if await self._redis.exists(self._rkey(execution_id, "cancelled")):
+                self._cancelled.add(execution_id)
+            slow = await self._redis.hgetall(self._rkey(execution_id, "slow"))
+            if slow:
+                self._slow_since[execution_id] = {
+                    node_id: datetime.fromisoformat(since)
+                    for node_id, since in slow.items()
+                }
+            notified = await self._redis.smembers(
+                self._rkey(execution_id, "slow_notified")
+            )
+            if notified:
+                self._slow_notified[execution_id] = set(notified)
+        except Exception:
+            logger.debug("Failed to restore control state from Redis", exc_info=True)
 
     async def execute_workflow(
         self,
@@ -193,6 +272,8 @@ class ExecutionManager:
             pass
         else:
             raise ValueError("Workflow DAG contains a cycle")
+
+        await self._restore_control_state(execution_id)
 
         sm = ExecutionStateMachine(execution_id=execution_id)
         self._state_machines[execution_id] = sm
@@ -243,7 +324,7 @@ class ExecutionManager:
                 for task, node in in_flight.items():
                     started = node_started.get(node.id)
                     if started:
-                        self._mark_slow_if_needed(execution_id, node.id, started)
+                        await self._mark_slow_if_needed(execution_id, node.id, started)
 
                 # 干预处理：取消被要求切换模型的 in-flight 节点
                 pending_interventions = self._interventions.get(execution_id, {})
@@ -315,7 +396,7 @@ class ExecutionManager:
                             self._apply_intervention(node_def, intervention)
                             node_results.append(result)
                             continue
-                    self._ack_slow(execution_id, node_def.id)
+                    await self._ack_slow(execution_id, node_def.id)
 
                     if result.status == NodeStatus.FAILED:
                         sm.fail(result.error or "Node failed")
@@ -372,6 +453,12 @@ class ExecutionManager:
         finally:
             self._state_machines.pop(execution_id, None)
             self._cancel_events.pop(execution_id, None)
+            self._intervention_events.pop(execution_id, None)
+            self._slow_since.pop(execution_id, None)
+            self._slow_notified.pop(execution_id, None)
+            self._interventions.pop(execution_id, None)
+            self._cancelled.discard(execution_id)
+            await self._clear_control_state(execution_id)
 
         return self._build_result(
             sm, node_results, context, rerun_recommendations
@@ -606,7 +693,7 @@ class ExecutionManager:
         cancel_event = self._cancel_events.get(execution_id)
         if cancel_event:
             cancel_event.set()
-        self._cancelled.add(execution_id)
+        await self._mark_cancelled(execution_id)
         sm.cancel()
 
     def is_cancel_requested(self, execution_id: UUID) -> bool:
