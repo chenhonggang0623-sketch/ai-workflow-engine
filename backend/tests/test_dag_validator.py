@@ -62,6 +62,41 @@ class TestDAGValidatorDataFlow:
         assert not report.approved
         assert any(e.code == "INPUT_NO_SOURCE" for e in report.errors)
 
+    def test_plan_source_requires_plan_node_upstream(self):
+        """$.plan 源必须有方案节点（planner 类型）上游；缺失时明确报错。"""
+        wf = _dag(
+            [
+                _node(
+                    "plan",
+                    type="planner",
+                    input_mapping=[{"source": "$.requirement", "target": "requirement"}],
+                    output_mapping=[
+                        {"source": "plan", "target": "$.plan"},
+                        {"source": "plan_markdown", "target": "$.plan_markdown"},
+                    ],
+                    timeout=120,
+                ),
+                _node(
+                    "impl",
+                    input_mapping=[{"source": "$.plan", "target": "plan"}],
+                    output_mapping=[{"source": "x", "target": "$.out"}],
+                ),
+            ],
+            [{"source": "plan", "target": "impl"}],
+        )
+        report = validate_dag(wf)
+        assert report.approved
+        assert not any(e.code == "INPUT_NO_SOURCE" for e in report.errors)
+
+    def test_plan_source_without_plan_node_rejected(self):
+        wf = _dag(
+            [_node("a", input_mapping=[{"source": "$.plan", "target": "plan"}])],
+            [],
+        )
+        report = validate_dag(wf)
+        assert not report.approved
+        assert any(e.code == "INPUT_NO_SOURCE" for e in report.errors)
+
     def test_input_produced_by_downstream_not_ancestor(self):
         wf = _dag(
             [

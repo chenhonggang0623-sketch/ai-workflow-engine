@@ -109,6 +109,27 @@ class TestReplanCoordinator:
         assert execution.status == "succeeded"
 
     @pytest.mark.asyncio
+    async def test_initial_context_injects_blueprint(self):
+        """replan 执行必须把当前蓝图注入 initial_context，供方案节点组装 $.plan。"""
+        execution = MagicMock()
+        coordinator, exec_mgr, planner, architect, session = make_coordinator(
+            [make_result(ExecutionStatus.SUCCEEDED)], execution
+        )
+        blueprint = {"modules": [{"id": "m1"}], "constraints": ["c1"]}
+        await coordinator.run(
+            requirement="req",
+            blueprint_content=blueprint,
+            workflow_definition=make_workflow_dict(),
+            execution_id=uuid.uuid4(),
+            project_path="/tmp/p",
+        )
+        _, kwargs = exec_mgr.execute_workflow.call_args
+        ctx = kwargs["initial_context"]
+        assert ctx["blueprint"] == blueprint
+        assert ctx["requirement"] == "req"
+        assert ctx["project_path"] == "/tmp/p"
+
+    @pytest.mark.asyncio
     async def test_success_surfaces_rerun_recommendation_without_replan(self):
         execution = MagicMock()
         coordinator, exec_mgr, planner, architect, session = make_coordinator(

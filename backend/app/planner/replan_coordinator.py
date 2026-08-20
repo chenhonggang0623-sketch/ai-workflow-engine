@@ -68,6 +68,7 @@ class ReplanCoordinator:
                     self._db_factory,
                     initial_context={
                         "requirement": requirement,
+                        "blueprint": current_blueprint,
                         "project_path": project_path,
                         "workflow_definition": current_wf,
                         "replan_attempt": replan_count,
@@ -155,6 +156,7 @@ class ReplanCoordinator:
                     execution_id, status="running",
                     context={
                         "requirement": requirement,
+                        "blueprint": current_blueprint,
                         "project_path": project_path,
                         "workflow_definition": current_wf,
                     },

@@ -138,14 +138,15 @@ class TestOutputMappingAlignment:
         assert "$.module_parser" in sources
 
     async def test_input_mapping_targets_use_contract_field_names(self):
-        """input target 按 input_contract 字段名对齐。"""
+        """input target 按 input_contract 字段名对齐；方案映射（$.plan→plan）前置。"""
         llm = _make_llm(_llm_dag_with_hallucinated_keys())
         workflow = await _planner(llm).generate_dag(BLUEPRINT)
 
         stats = next(n for n in workflow["nodes"] if n["id"] == "stats_engine_agent")
         targets = [m["target"] for m in stats["input_mapping"]]
-        assert targets == ["todo_items", "md_text"]
-        assert len(stats["input_mapping"]) == len(BLUEPRINT["modules"][1]["input_contract"])
+        assert targets == ["plan", "todo_items", "md_text"]
+        assert len(stats["input_mapping"]) == len(BLUEPRINT["modules"][1]["input_contract"]) + 1
+        assert stats["input_mapping"][0] == {"source": "$.plan", "target": "plan"}
 
     async def test_contract_missing_mappings_filled_from_upstream(self):
         """input_mapping 少于契约字段时，用上游模块输出键补齐。"""
@@ -156,7 +157,7 @@ class TestOutputMappingAlignment:
 
         parser = next(n for n in workflow["nodes"] if n["id"] == "md_parser_agent")
         targets = [m["target"] for m in parser["input_mapping"]]
-        assert targets == ["md_text", "requirement"]
+        assert targets == ["plan", "md_text", "requirement"]
 
     async def test_fallback_workflow_stays_aligned(self):
         """LLM 失败 → fallback DAG 也经契约对齐（幂等，无副作用）。"""
@@ -164,8 +165,10 @@ class TestOutputMappingAlignment:
         llm.chat.side_effect = RuntimeError("boom")
         workflow = await _planner(llm).generate_dag(BLUEPRINT)
 
-        assert len(workflow["nodes"]) == 2
-        for node in workflow["nodes"]:
+        assert workflow["nodes"][0]["type"] == "planner"
+        agent_nodes = [n for n in workflow["nodes"] if n["type"] == "agent"]
+        assert len(agent_nodes) == 2
+        for node in agent_nodes:
             mid = node["config"]["module_id"]
             module = next(m for m in BLUEPRINT["modules"] if m["id"] == mid)
             expected = [
@@ -173,6 +176,7 @@ class TestOutputMappingAlignment:
                 for i, f in enumerate(module["output_contract"])
             ]
             assert node["output_mapping"] == expected
+            assert node["input_mapping"][0] == {"source": "$.plan", "target": "plan"}
 
     async def test_skill_and_aligned_keys_survive_default_provider(self):
         """统一默认 provider 后：契约对齐键进 output_mapping，skill 走通道 B。"""

@@ -130,6 +130,52 @@ async def test_planner_node(runner):
 
 
 @pytest.mark.asyncio
+async def test_planner_node_assembles_plan_from_requirement_and_blueprint(runner, tmp_path):
+    node = _make_node(
+        node_type=NodeType.PLANNER,
+        input_mapping=[InputMapping(source="$.requirement", target="requirement")],
+    )
+    ctx = {
+        "requirement": "做一个计数器页面",
+        "blueprint": {
+            "prd": {
+                "summary": "计数器页面",
+                "goals": ["点击计数"],
+                "features": ["点击按钮计数"],
+                "non_functional": ["轻量"],
+                "acceptance_criteria": ["点击后数字 +1"],
+            },
+            "architecture": {"tech_stack": ["opencode_cli"]},
+            "constraints": ["使用 HTML/CSS/JS 实现"],
+            "modules": [],
+        },
+        "project_path": str(tmp_path),
+    }
+    result = await runner.handle_node(node, ctx)
+    assert result.status == NodeStatus.SUCCEEDED
+
+    plan = result.output["plan"]
+    assert "计数器页面" in plan["project_description"]
+    assert plan["features"] == ["点击按钮计数"]
+    assert plan["requirements"][0] == "做一个计数器页面"
+    assert "使用 HTML/CSS/JS 实现" in plan["constraints"]
+    assert plan["acceptance_criteria"] == ["点击后数字 +1"]
+    assert result.output["plan_markdown"].startswith("# 项目方案")
+
+    plan_file = tmp_path / "PLAN.md"
+    assert plan_file.exists()
+    assert "## 功能" in plan_file.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_planner_node_writes_plan_md_without_project_path(runner):
+    node = _make_node(node_type=NodeType.PLANNER)
+    result = await runner.handle_node(node, {"requirement": "需求"})
+    assert result.status == NodeStatus.SUCCEEDED
+    assert result.output["plan"]["requirements"] == ["需求"]
+
+
+@pytest.mark.asyncio
 async def test_input_mapping(runner):
     node = _make_node(
         node_type=NodeType.AGENT,

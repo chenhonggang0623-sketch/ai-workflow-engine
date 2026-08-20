@@ -9,6 +9,7 @@ from app.engine.node_runner import NodeRunner
 from app.engine.types import (
     WorkflowDefinition, NodeDefinition, EdgeDefinition,
     NodeType, NodeConfig, ExecutionStatus, NodeStatus, NodeResult,
+    InputMapping, OutputMapping,
 )
 from app.models.workflow import NodeExecution as NodeExecutionModel
 
@@ -134,6 +135,83 @@ async def test_execute_single_node(mock_node_runner, mock_db_factory):
     result = await mgr.execute_workflow(wf, exec_id, mock_db_factory)
     assert result.status == ExecutionStatus.SUCCEEDED
     assert len(result.node_results) == 1
+
+
+@pytest.mark.asyncio
+async def test_plan_node_feeds_downstream_agent(mock_db_factory, tmp_path):
+    """E2E：方案节点组装 $.plan → 下游 agent 经 input_mapping 收到 plan。"""
+    from app.engine.node_runner import NodeRunner
+
+    agent_executor = AsyncMock()
+    captured = {}
+
+    async def fake_execute(*args, **kwargs):
+        captured["node_input"] = kwargs.get("node_input", kwargs.get("task", {}))
+        return {"output": "implemented", "tool_calls": [], "usage": {}}
+
+    agent_executor.execute = fake_execute
+    runner = NodeRunner(agent_executor=agent_executor, tool_registry=MagicMock())
+
+    wf = WorkflowDefinition(
+        name="plan-flow",
+        nodes=[
+            NodeDefinition(
+                id="plan_node", type=NodeType.PLANNER, label="方案制定",
+                input_mapping=[InputMapping(source="$.requirement", target="requirement")],
+                output_mapping=[
+                    OutputMapping(source="plan", target="$.plan"),
+                    OutputMapping(source="plan_markdown", target="$.plan_markdown"),
+                ],
+            ),
+            NodeDefinition(
+                id="dev", type=NodeType.AGENT, label="Dev",
+                input_mapping=[
+                    InputMapping(source="$.requirement", target="requirement"),
+                    InputMapping(source="$.plan", target="plan"),
+                ],
+                output_mapping=[OutputMapping(source="output", target="$.dev_output")],
+            ),
+        ],
+        edges=[EdgeDefinition(id="e1", source="plan_node", target="dev")],
+    )
+
+    mgr = ExecutionManager(node_runner=runner, max_concurrency=5)
+    exec_id = uuid4()
+    result = await mgr.execute_workflow(
+        wf, exec_id, mock_db_factory,
+        {
+            "requirement": "做一个计数器页面",
+            "blueprint": {
+                "prd": {
+                    "summary": "计数器页面", "goals": ["点击计数"],
+                    "features": ["点击按钮计数"], "non_functional": ["轻量"],
+                    "acceptance_criteria": ["点击后数字 +1"],
+                },
+                "architecture": {"tech_stack": ["opencode_cli"]},
+                "constraints": ["使用 HTML/CSS/JS 实现"],
+                "modules": [],
+            },
+            "project_path": str(tmp_path),
+        },
+    )
+    assert result.status == ExecutionStatus.SUCCEEDED
+    assert [r.node_id for r in result.node_results] == ["plan_node", "dev"]
+
+    context = result.context
+    plan = context["$.plan"]
+    assert "计数器页面" in plan["project_description"]
+    assert "opencode_cli" in plan["project_description"]
+    assert plan["features"] == ["点击按钮计数"]
+    assert plan["requirements"][0] == "做一个计数器页面"
+    assert plan["acceptance_criteria"] == ["点击后数字 +1"]
+    assert context["$.plan_markdown"].startswith("# 项目方案")
+    assert context["$.dev_output"] == "implemented"
+
+    assert captured["node_input"]["plan"] == plan
+    assert captured["node_input"]["requirement"] == "做一个计数器页面"
+    plan_file = tmp_path / "PLAN.md"
+    assert plan_file.exists()
+    assert "## 功能" in plan_file.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

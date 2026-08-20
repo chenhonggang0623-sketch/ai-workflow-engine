@@ -115,7 +115,13 @@ class PlanningReview:
         for mapping in node.get("input_mapping", []):
             target = mapping.get("target")
             source = mapping.get("source", "")
-            if target and input_contract and target not in input_contract and source != "$.requirement":
+            # $.requirement / $.plan 是全局 context 键，不属于模块契约，豁免
+            if (
+                target
+                and input_contract
+                and target not in input_contract
+                and source not in ("$.requirement", "$.plan")
+            ):
                 warnings.append(
                     f"Node '{node.get('id')}' input field '{target}' not in "
                     f"module '{module.get('id')}' input_contract {sorted(input_contract)}"

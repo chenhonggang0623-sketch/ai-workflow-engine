@@ -83,6 +83,24 @@ class TestReviewAgainstBlueprint:
         assert result["approved"] is False
         assert any("undeclared_field" in w for w in result["warnings"])
 
+    def test_plan_mapping_exempt_from_contract_check(self):
+        """$.plan 是全局 context 键，target=plan 不触发契约告警。"""
+        wf = {
+            "nodes": [
+                agent_node("b", "backend", input_mapping=[
+                    {"source": "$.plan", "target": "plan"},
+                    {"source": "$.requirement", "target": "requirement"},
+                ]),
+                agent_node("f", "frontend", input_mapping=[
+                    {"source": "$.plan", "target": "plan"},
+                ]),
+            ],
+            "edges": [{"source": "b", "target": "f"}],
+        }
+        result = PlanningReview.review_against_blueprint(wf, BLUEPRINT)
+        assert result["approved"] is True
+        assert result["warnings"] == []
+
     def test_output_contract_violation_rejected(self):
         wf = {
             "nodes": [

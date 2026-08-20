@@ -226,6 +226,19 @@ async def execute_workflow(
     os.makedirs(project_path, exist_ok=True)
     definition = inject_workspace(definition, project_path)
 
+    # 方案节点需要蓝图：把 active blueprint 注入执行期 context，
+    # 供 planner 节点组装 $.plan（用户手建 workflow 无蓝图则跳过）
+    blueprint_result = await db.execute(
+        select(Blueprint)
+        .where(Blueprint.workflow_id == id, Blueprint.status == "active")
+        .order_by(Blueprint.version.desc())
+        .limit(1)
+    )
+    blueprint_row = blueprint_result.scalar_one_or_none()
+    if blueprint_row is not None:
+        initial_context = {**initial_context, "blueprint": blueprint_row.content}
+    initial_context = {**initial_context, "project_path": project_path}
+
     wf_def = WorkflowDefinition(
         name=workflow.name,
         description=workflow.description,

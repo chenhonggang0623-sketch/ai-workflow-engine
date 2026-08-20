@@ -157,6 +157,116 @@ class TestPlannerAgent:
         assert result["workflow"] is not None
         assert len(result["workflow"]["nodes"]) >= 1
 
+    @pytest.mark.asyncio
+    async def test_plan_llm_output_without_plan_node_gets_plan_node_prepended(self, planner):
+        """LLM 输出忘记方案节点时，_ensure_plan_node 必须前置插入并连边。"""
+        planner._llm.chat = AsyncMock(return_value={
+            "content": json.dumps({
+                "name": "no-plan",
+                "nodes": [
+                    {
+                        "id": "impl_agent",
+                        "type": "agent",
+                        "label": "Impl",
+                        "config": {
+                            "module_id": "core",
+                            "role": "developer",
+                            "purpose": "implement",
+                            "provider": "opencode_cli",
+                            "executor_type": "local_cli",
+                            "system_prompt": "impl",
+                        },
+                        "input_mapping": [{"source": "$.requirement", "target": "requirement"}],
+                        "output_mapping": [{"source": "output", "target": "$.module_core"}],
+                    }
+                ],
+                "edges": [],
+            }),
+            "tool_calls": [],
+            "usage": {},
+        })
+        result = await planner.plan("Build a todo app")
+        workflow = result["workflow"]
+        assert workflow["nodes"][0]["type"] == "planner"
+        assert workflow["nodes"][0]["id"] == "plan_node"
+        edge_pairs = {(e["source"], e["target"]) for e in workflow["edges"]}
+        assert ("plan_node", "impl_agent") in edge_pairs
+        impl = next(n for n in workflow["nodes"] if n["id"] == "impl_agent")
+        assert any(m["source"] == "$.plan" and m["target"] == "plan"
+                   for m in impl["input_mapping"])
+
+    def test_ensure_plan_node_idempotent_when_exists(self, planner):
+        workflow = {
+            "nodes": [
+                {
+                    "id": "plan_node",
+                    "type": "planner",
+                    "label": "方案制定",
+                    "config": {},
+                    "input_mapping": [],
+                    "output_mapping": [],
+                },
+                {"id": "a", "type": "agent", "config": {}, "input_mapping": [], "output_mapping": []},
+            ],
+            "edges": [{"source": "plan_node", "target": "a"}],
+        }
+        result = planner._ensure_plan_node(workflow)
+        assert len(result["nodes"]) == 2
+        assert result["nodes"][0]["input_mapping"] == [
+            {"source": "$.requirement", "target": "requirement"}
+        ]
+        assert result["nodes"][0]["output_mapping"] == [{"source": "plan", "target": "$.plan"}]
+        assert len(result["edges"]) == 1
+
+    def test_ensure_plan_node_prepends_to_empty_graph(self, planner):
+        workflow = {"nodes": [], "edges": []}
+        result = planner._ensure_plan_node(workflow)
+        assert len(result["nodes"]) == 1
+        assert result["nodes"][0]["type"] == "planner"
+        assert result["edges"] == []
+
+    def test_inject_plan_mapping_adds_plan_input_to_agent_nodes(self, planner):
+        workflow = {
+            "nodes": [
+                {"id": "p", "type": "planner", "config": {}, "input_mapping": [], "output_mapping": []},
+                {
+                    "id": "a",
+                    "type": "agent",
+                    "config": {},
+                    "input_mapping": [{"source": "$.requirement", "target": "requirement"}],
+                    "output_mapping": [],
+                },
+                {"id": "t", "type": "tool", "config": {}, "input_mapping": [], "output_mapping": []},
+            ],
+            "edges": [],
+        }
+        result = planner._inject_plan_mapping(workflow)
+        agent = next(n for n in result["nodes"] if n["id"] == "a")
+        assert agent["input_mapping"] == [
+            {"source": "$.plan", "target": "plan"},
+            {"source": "$.requirement", "target": "requirement"},
+        ]
+        planner_node = next(n for n in result["nodes"] if n["id"] == "p")
+        assert planner_node["input_mapping"] == []
+        tool = next(n for n in result["nodes"] if n["id"] == "t")
+        assert tool["input_mapping"] == []
+
+    def test_inject_plan_mapping_idempotent(self, planner):
+        workflow = {
+            "nodes": [
+                {
+                    "id": "a",
+                    "type": "agent",
+                    "config": {},
+                    "input_mapping": [{"source": "$.plan", "target": "plan"}],
+                    "output_mapping": [],
+                }
+            ],
+            "edges": [],
+        }
+        result = planner._inject_plan_mapping(workflow)
+        assert len(result["nodes"][0]["input_mapping"]) == 1
+
     def test_parse_llm_output_with_code_fence(self, planner):
         content = "```json\n" + json.dumps(FALLBACK_WORKFLOW) + "\n```"
         result = planner._parse_llm_output(content)
@@ -178,14 +288,21 @@ class TestPlannerAgent:
             "构建电商平台，微服务架构，高并发，分布式，支付集成，需要企业级生产部署"
         )
         workflow = result["workflow"]
-        assert len(workflow["nodes"]) >= 3, (
+        assert workflow["nodes"][0]["type"] == "planner", (
+            "DAG must start with the plan node"
+        )
+        agent_nodes = [n for n in workflow["nodes"] if n["type"] != "planner"]
+        assert len(agent_nodes) >= 3, (
             "Complex task should fall back to a multi-node DAG, got "
             f"{len(workflow['nodes'])}"
         )
-        for node in workflow["nodes"]:
+        for node in agent_nodes:
             assert node["config"]["provider"] == "opencode_cli"
             assert node["config"]["executor_type"] == "local_cli"
             assert node["config"].get("module_id"), "DAG nodes must reference a blueprint module"
+            assert any(m["source"] == "$.plan" for m in node["input_mapping"]), (
+                "Work nodes must read the plan"
+            )
         assert result["blueprint"]["content"]["modules"], "Blueprint modules must be present"
 
     @pytest.mark.asyncio
@@ -194,7 +311,10 @@ class TestPlannerAgent:
         result = await planner.plan("开发一个带用户认证的博客系统，含数据库存储")
         workflow = result["workflow"]
         assert len(workflow["nodes"]) >= 2
+        assert workflow["nodes"][0]["type"] == "planner"
         for node in workflow["nodes"]:
+            if node["type"] == "planner":
+                continue
             assert node["config"]["provider"] == "opencode_cli"
 
     @pytest.mark.asyncio
@@ -202,15 +322,18 @@ class TestPlannerAgent:
         planner._llm.chat.side_effect = Exception("LLM down")
         result = await planner.plan("生成一个计数器页面")
         workflow = result["workflow"]
-        assert len(workflow["nodes"]) == 1
-        assert workflow["nodes"][0]["config"]["provider"] == "opencode_cli"
+        assert workflow["nodes"][0]["type"] == "planner"
+        assert len(workflow["nodes"]) == 2
+        assert workflow["nodes"][1]["config"]["provider"] == "opencode_cli"
 
-    """所有节点无条件统一使用默认 provider（无论配置多少 key），节点间仅任务/prompt 不同；
-    用户可在 DAG 编辑器中点击节点按需修改 provider。"""
+    """节点 provider 按可用列表匹配：指定可用→保留；不可用→落默认；缺失→默认；
+    替换时 executor_type 强同步。"""
 
     def test_single_provider_openai_with_placeholder_key_forced_to_default(self, planner, monkeypatch):
         monkeypatch.setattr(settings, "openai_api_key", "sk-your-key-here")
         monkeypatch.setattr(settings, "agent_default_provider", "opencode_cli")
+        monkeypatch.setattr(availability, "available_provider_names", lambda: ["opencode_cli"])
+        monkeypatch.setattr(availability, "resolve_effective_default", lambda: "opencode_cli")
         workflow = {
             "nodes": [
                 {"id": "n1", "type": "agent", "config": {
@@ -275,13 +398,15 @@ class TestPlannerAgent:
         ]
         wf = planner._build_from_modules(modules, {"modules": modules, "constraints": []})
         node_ids = [n["id"] for n in wf["nodes"]]
-        assert node_ids == ["pm_agent", "architecture_agent", "backend_agent", "qa_agent"]
+        assert node_ids == ["plan_node", "pm_agent", "architecture_agent", "backend_agent", "qa_agent"]
+        assert wf["nodes"][0]["type"] == "planner"
         edge_pairs = {(e["source"], e["target"]) for e in wf["edges"]}
         assert edge_pairs == {
+            ("plan_node", "pm_agent"),
             ("pm_agent", "architecture_agent"),
             ("architecture_agent", "backend_agent"),
             ("backend_agent", "qa_agent"),
         }
         in_degree = {nid: sum(1 for e in wf["edges"] if e["target"] == nid) for nid in node_ids}
-        assert in_degree["pm_agent"] == 0
+        assert in_degree["plan_node"] == 0
         assert all(in_degree[nid] == 1 for nid in node_ids[1:])

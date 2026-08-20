@@ -78,13 +78,19 @@ class TestCatalogInPrompt:
 
 
 class TestApplySkills:
+    @staticmethod
+    def _agent_nodes(workflow):
+        agents = [n for n in workflow["nodes"] if n["type"] == "agent"]
+        assert agents, "workflow must contain agent nodes"
+        return agents
+
     async def test_explicit_skill_kept_in_config_for_local_cli(self):
         """所有节点统一默认 provider（opencode_cli）→ 通道 B：skill_id 记入 config，
         正文不烙进 system_prompt（执行时由工作区注入）。"""
         llm = _make_llm(_dag_with_skill_ids("test-driven-development", "requesting-code-review"))
         workflow = await _planner(llm).generate_dag(BLUEPRINT)
 
-        node1 = workflow["nodes"][0]
+        node1 = self._agent_nodes(workflow)[0]
         assert node1["config"]["provider"] == "opencode_cli"
         assert node1["config"]["skill_id"] == "test-driven-development"
         assert "## 工作方法（Skill: test-driven-development）" not in (node1["config"].get("system_prompt") or "")
@@ -95,7 +101,7 @@ class TestApplySkills:
         llm = _make_llm(_dag_with_skill_ids("test-driven-development", "requesting-code-review"))
         workflow = await _planner(llm).generate_dag(BLUEPRINT)
 
-        node1 = workflow["nodes"][0]
+        node1 = self._agent_nodes(workflow)[0]
         assert node1["config"]["provider"] == "opencode_cli"
         assert node1["config"]["executor_type"] == "local_cli"
         assert node1["config"]["skill_id"] == "test-driven-development"
@@ -106,15 +112,14 @@ class TestApplySkills:
         llm = _make_llm(_dag_with_skill_ids(None, None))
         workflow = await _planner(llm).generate_dag(BLUEPRINT)
 
-        node1 = workflow["nodes"][0]
+        node1, node2 = self._agent_nodes(workflow)
         assert node1["config"]["skill_id"] == "subagent-driven-development"
-        node2 = workflow["nodes"][1]
         assert node2["config"]["skill_id"] == "test-driven-development"
 
     async def test_invalid_skill_id_falls_back(self):
         llm = _make_llm(_dag_with_skill_ids("no-such-skill", "test-driven-development"))
         workflow = await _planner(llm).generate_dag(BLUEPRINT)
-        node1 = workflow["nodes"][0]
+        node1 = self._agent_nodes(workflow)[0]
         assert node1["config"]["skill_id"] == "subagent-driven-development"
 
     async def test_local_cli_keeps_skill_id_without_body(self):
@@ -123,7 +128,7 @@ class TestApplySkills:
         dag["nodes"][0]["config"]["executor_type"] = "local_cli"
         llm = _make_llm(dag)
         workflow = await _planner(llm).generate_dag(BLUEPRINT)
-        config = workflow["nodes"][0]["config"]
+        config = self._agent_nodes(workflow)[0]["config"]
         assert config["skill_id"] == "subagent-driven-development"
         assert "## 工作方法" not in (config.get("system_prompt") or "")
         assert config["skill_version"] == "main"
@@ -140,7 +145,10 @@ class TestFallbackPath:
         llm.chat.side_effect = RuntimeError("boom")
         workflow = await _planner(llm).generate_dag(BLUEPRINT)
         assert workflow["nodes"], "fallback workflow should have nodes"
+        assert workflow["nodes"][0]["type"] == "planner"
         for node in workflow["nodes"]:
+            if node["type"] != "agent":
+                continue
             assert node["config"]["skill_id"]
             assert node["config"]["skill_version"] == "main"
             assert "# 角色" in node["config"]["system_prompt"]

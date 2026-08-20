@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import logging
 from datetime import UTC, datetime
 
 from app.engine.types import (
@@ -15,6 +16,9 @@ from app.agent.executor.router import ExecutorRouter
 from app.engine.context_service import ContextService, DEFAULT_MAX_CONTEXT_CHARS
 from app.engine.prompt_factory import build_node_prompt
 from app.engine.safe_eval import safe_eval
+from app.engine.plan_assembler import assemble_plan, render_plan_markdown
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_jsonpath(obj: dict, path: str):
@@ -224,7 +228,29 @@ class NodeRunner:
         return {"status": "awaiting_input", "input": node_input}
 
     async def _run_planner(self, node: NodeDefinition, node_input: dict, ctx: dict = None, log_sink=None) -> dict:
-        return {"plan": f"plan from {node.label}", "input": node_input}
+        """方案节点：组装需求 + PRD/蓝图 为结构化方案（零 LLM）。
+
+        产出 plan（dict，写 $.plan）与 plan_markdown（写 $.plan_markdown），
+        并把 markdown 落盘到工作区 PLAN.md（project_path 来自全局 ctx）。
+        """
+        import os
+
+        ctx = ctx or {}
+        requirement = node_input.get("requirement") or ctx.get("requirement") or ""
+        blueprint = ctx.get("blueprint") or {}
+        plan = assemble_plan(requirement, blueprint)
+        markdown = render_plan_markdown(plan)
+
+        project_path = ctx.get("project_path") or node.config.working_directory
+        if project_path:
+            try:
+                plan_path = os.path.join(project_path, "PLAN.md")
+                with open(plan_path, "w", encoding="utf-8") as fh:
+                    fh.write(markdown)
+            except OSError as exc:
+                logger.warning("Plan node %s failed to write PLAN.md: %s", node.id, exc)
+
+        return {"plan": plan, "plan_markdown": markdown}
 
     def apply_output_mapping(self, node: NodeDefinition, output: dict, context: dict) -> dict:
         return _apply_output_mapping(node, output, context)

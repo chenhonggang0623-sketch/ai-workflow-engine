@@ -190,8 +190,11 @@ class TestPlannerAgentWithComplexity:
         })
         result = await planner.plan("开发一个博客系统")
         # 单节点 DAG 未覆盖蓝图全部模块 → 回退为模块驱动的 fallback DAG，
-        # fallback 节点必须声明蓝图模块与职责信息
-        node = result["workflow"]["nodes"][0]
+        # fallback 以方案节点开头，agent 节点必须声明蓝图模块与职责信息
+        assert result["workflow"]["nodes"][0]["type"] == "planner"
+        node = next(
+            n for n in result["workflow"]["nodes"] if n["type"] == "agent"
+        )
         assert "module_id" in node["config"]
         assert "role" in node["config"]
         assert "purpose" in node["config"]

@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 import re
@@ -21,6 +22,28 @@ from app.skills.loader import SkillMeta
 logger = logging.getLogger(__name__)
 
 _MODULE_SOURCE_RE = re.compile(r"^\$\.module_(.+?)(?:_\d+)?$")
+
+PLAN_NODE_ID = "plan_node"
+
+# 方案节点模板：DAG 首节点，执行期零 LLM 组装方案文档
+PLAN_NODE_TEMPLATE: dict = {
+    "id": PLAN_NODE_ID,
+    "type": "planner",
+    "label": "方案制定",
+    "config": {
+        "role": "planner",
+        "purpose": "分析需求与蓝图，组装执行方案",
+        "timeout_seconds": 120,
+    },
+    "input_mapping": [{"source": "$.requirement", "target": "requirement"}],
+    "output_mapping": [
+        {"source": "plan", "target": "$.plan"},
+        {"source": "plan_markdown", "target": "$.plan_markdown"},
+    ],
+}
+
+# 工作节点的方案主输入映射
+PLAN_MAPPING = {"source": "$.plan", "target": "plan"}
 
 
 def _normalize_module_source(
@@ -48,6 +71,9 @@ Blueprint JSON:
 __BLUEPRINT_JSON__
 
 Available node types:
+- planner: FIRST node of the DAG. Assembles the execution plan document
+  (project description, features, requirements, constraints, acceptance
+  criteria) from the requirement + blueprint. No LLM call, no system_prompt.
 - agent: AI worker with a specific role (requires system_prompt in config)
 - tool: Execute a registered tool (shell, file_read, file_write, file_list)
 - condition: Branching based on context evaluation (requires expression + branches)
@@ -87,6 +113,17 @@ Workflow Generation Rules:
 10. Each agent node's output_mapping targets MUST be "$.module_{module_id}" for the
     first output and "$.module_{module_id}_{n}" (1-based) for additional outputs,
     so downstream nodes can reference them deterministically.
+11. The FIRST node of the DAG MUST be a "planner" node with id "plan_node" and
+    label "方案制定". It assembles the execution plan from the requirement and
+    blueprint. Give it exactly:
+    input_mapping: [{"source": "$.requirement", "target": "requirement"}]
+    output_mapping: [{"source": "plan", "target": "$.plan"},
+                     {"source": "plan_markdown", "target": "$.plan_markdown"}]
+    It has no system_prompt and makes no LLM call.
+12. Every agent node MUST include input_mapping entry
+    {"source": "$.plan", "target": "plan"} — the plan document is the node's
+    primary input. Do NOT use "$.requirement" as an agent node input source
+    (the planner node consumes it and turns it into the plan).
 
 Each agent node config can include:
 - role: what role this agent plays
@@ -107,6 +144,23 @@ Example (single module blueprint):
   "description": "Implement the calculator module",
   "nodes": [
     {
+      "id": "plan_node",
+      "type": "planner",
+      "label": "方案制定",
+      "config": {
+        "role": "planner",
+        "purpose": "分析需求与蓝图，组装执行方案",
+        "timeout_seconds": 120
+      },
+      "input_mapping": [
+        {"source": "$.requirement", "target": "requirement"}
+      ],
+      "output_mapping": [
+        {"source": "plan", "target": "$.plan"},
+        {"source": "plan_markdown", "target": "$.plan_markdown"}
+      ]
+    },
+    {
       "id": "core_agent",
       "type": "agent",
       "label": "Core Implementer",
@@ -116,10 +170,11 @@ Example (single module blueprint):
         "purpose": "Implement the core module",
         "provider": "opencode_cli",
         "executor_type": "local_cli",
-        "system_prompt": "You are a developer. Implement the core module following the blueprint constraints.",
+        "system_prompt": "You are a developer. Implement the core module following the plan and blueprint constraints.",
         "timeout_seconds": 900
       },
       "input_mapping": [
+        {"source": "$.plan", "target": "plan"},
         {"source": "$.requirement", "target": "requirement"}
       ],
       "output_mapping": [
@@ -127,7 +182,9 @@ Example (single module blueprint):
       ]
     }
   ],
-  "edges": []
+  "edges": [
+    {"source": "plan_node", "target": "core_agent"}
+  ]
 }
 
 Rules:
@@ -242,6 +299,10 @@ class PlannerAgent:
 
         workflow_data = self._normalize_providers(workflow_data)
         workflow_data = self._align_contracts(workflow_data, blueprint)
+        # 方案节点兜底：LLM 可能丢节点/忘规则，统一保证 DAG 以方案节点开头，
+        # 且每个工作节点都读 $.plan（先于 _apply_skills，使提示词列出 $.plan 输入）
+        workflow_data = self._ensure_plan_node(workflow_data)
+        workflow_data = self._inject_plan_mapping(workflow_data)
         workflow_data = self._apply_skills(workflow_data, blueprint)
         # 断连修复：LLM 生成的 DAG 可能出现孤立节点/断连组件，
         # 统一把断开的部分按顺序串入主链，保证无「线段连接不上」
@@ -264,6 +325,8 @@ class PlannerAgent:
                 self._build_fallback_workflow(complexity, blueprint)
             )
             workflow_data = self._align_contracts(workflow_data, blueprint)
+            workflow_data = self._ensure_plan_node(workflow_data)
+            workflow_data = self._inject_plan_mapping(workflow_data)
             workflow_data = self._apply_skills(workflow_data, blueprint)
             workflow_data = ensure_dag_connected(workflow_data)
 
@@ -288,6 +351,9 @@ class PlannerAgent:
             revised_workflow = dict(workflow_data)
 
         revised_workflow = self._normalize_providers(revised_workflow)
+        # 修订必须保留方案节点（LLM 可能丢弃），并保证工作节点读 $.plan
+        revised_workflow = self._ensure_plan_node(revised_workflow)
+        revised_workflow = self._inject_plan_mapping(revised_workflow)
         revised_workflow = ensure_dag_connected(revised_workflow)
 
         review = PlanningReview.review(revised_workflow)
@@ -324,10 +390,10 @@ class PlannerAgent:
 
         by_id = {m.get("id"): m for m in modules}
         placed: set[str] = set()
-        nodes = []
+        nodes = [copy.deepcopy(PLAN_NODE_TEMPLATE)]
         edges = []
         prev_outputs: dict[str, str] = {}
-        prev_placed_id: str | None = None
+        prev_placed_id: str | None = PLAN_NODE_ID
 
         for module in modules:
             mid = module.get("id", "module")
@@ -452,9 +518,10 @@ class PlannerAgent:
         executor_type = PROVIDER_TO_EXECUTOR_TYPE.get(provider, "local_cli")
         timeout = 1200 if complexity.level == "complex" else 900
 
-        nodes = []
+        nodes = [copy.deepcopy(PLAN_NODE_TEMPLATE)]
         edges = []
         prev_node_id = None
+        first_agent_id = None
         for i, agent in enumerate(agents):
             node_id = f"{agent['role']}_{i + 1}"
             output_key = f"$.step_{agent['role']}_{i + 1}"
@@ -462,6 +529,8 @@ class PlannerAgent:
                 input_source = "$.requirement"
             else:
                 input_source = f"$.step_{agents[i - 1]['role']}_{i}"
+            if first_agent_id is None:
+                first_agent_id = node_id
 
             nodes.append({
                 "id": node_id,
@@ -481,6 +550,9 @@ class PlannerAgent:
             if prev_node_id is not None:
                 edges.append({"source": prev_node_id, "target": node_id})
             prev_node_id = node_id
+
+        if first_agent_id is not None:
+            edges.insert(0, {"source": PLAN_NODE_ID, "target": first_agent_id})
 
         return {
             "name": "Planned Workflow",
@@ -517,6 +589,54 @@ class PlannerAgent:
                 config["system_prompt"] = build_node_prompt(node, blueprint, skill=skill)
             else:
                 config.setdefault("skill_version", "main")
+        return workflow
+
+    def _ensure_plan_node(self, workflow: dict) -> dict:
+        """保证 DAG 以方案节点（planner）开头。幂等、零 LLM 成本。
+
+        - 已存在 planner 类型节点：仅补齐其 input/output_mapping 缺省值
+        - 不存在：前置插入方案节点模板，并把原 DAG 的首个无入边节点与它连边
+        """
+        nodes = list(workflow.get("nodes", []) or [])
+        edges = [dict(e) for e in (workflow.get("edges", []) or [])]
+
+        plan_node = next(
+            (n for n in nodes if n.get("type") == "planner"), None
+        )
+        if plan_node is not None:
+            if not plan_node.get("input_mapping"):
+                plan_node["input_mapping"] = [
+                    {"source": "$.requirement", "target": "requirement"}
+                ]
+            if not plan_node.get("output_mapping"):
+                plan_node["output_mapping"] = [{"source": "plan", "target": "$.plan"}]
+            return {**workflow, "nodes": nodes, "edges": edges}
+
+        plan_node = copy.deepcopy(PLAN_NODE_TEMPLATE)
+        nodes.insert(0, plan_node)
+        root_ids = [
+            n.get("id")
+            for n in nodes
+            if n.get("id") != PLAN_NODE_ID
+            and not any(e.get("target") == n.get("id") for e in edges)
+        ]
+        if root_ids and not any(e.get("source") == PLAN_NODE_ID for e in edges):
+            edges.append({"source": PLAN_NODE_ID, "target": root_ids[0], "label": "plan"})
+        return {**workflow, "nodes": nodes, "edges": edges}
+
+    def _inject_plan_mapping(self, workflow: dict) -> dict:
+        """为每个 agent 节点强制前置 $.plan → plan 输入映射（幂等）。
+
+        方案是工作节点的主输入；保证 LLM 路径与 fallback 路径行为一致。
+        已在 input_mapping 中声明 plan 的节点跳过。
+        """
+        for node in workflow.get("nodes", []) or []:
+            if node.get("type") != "agent":
+                continue
+            mappings = node.get("input_mapping") or []
+            if any(m.get("target") == "plan" for m in mappings):
+                continue
+            node["input_mapping"] = [dict(PLAN_MAPPING), *mappings]
         return workflow
 
     def _align_contracts(self, workflow: dict, blueprint: dict | None = None) -> dict:
