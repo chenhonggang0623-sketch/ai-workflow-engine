@@ -376,11 +376,12 @@ async def test_cancel_interrupts_running_node(mock_node_runner, mock_db_factory)
     await started.wait()
     found_id = next(iter(mgr._state_machines), None)
     await mgr.cancel(found_id)
+    # 执行结束（finally）会清理 _cancelled，取消标记只在执行期间有效
+    assert mgr.is_cancel_requested(found_id)
     result = await asyncio.wait_for(task, timeout=2)
     release.set()
     assert result.status == ExecutionStatus.CANCELLED
     assert not result.node_results
-    assert mgr.is_cancel_requested(found_id)
 
 
 @pytest.mark.asyncio

@@ -20,7 +20,7 @@ def mock_cm():
 @pytest.fixture
 def mock_registry():
     reg = AsyncMock()
-    reg.list = AsyncMock(return_value=[
+    reg.list_agents = AsyncMock(return_value=[
         {"id": "agent-1", "name": "Agent 1", "status": "active"},
         {"id": "agent-2", "name": "Agent 2", "status": "active"},
     ])

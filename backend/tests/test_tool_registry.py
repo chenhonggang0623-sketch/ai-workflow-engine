@@ -55,9 +55,11 @@ class TestToolRegistry:
             f.write("hello world")
             f.flush()
             fpath = f.name
-        os.unlink(fpath)
-        result = await registry.execute("file_read", {"path": fpath})
-        assert result["result"] == "hello world"
+        try:
+            result = await registry.execute("file_read", {"path": fpath})
+            assert result["result"] == "hello world"
+        finally:
+            os.unlink(fpath)
 
     @pytest.mark.asyncio
     async def test_execute_file_read_not_found(self, registry):
