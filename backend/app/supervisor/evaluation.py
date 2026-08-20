@@ -9,6 +9,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.evaluation import Evaluation, AgentPerformance
+from app.agent.llm_gateway import default_model_config
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +194,10 @@ class EvaluationEngine:
                 {"role": "user", "content": prompt},
             ]
             response = await self._llm.chat(
-                model_config={"model": "gpt-4o-mini", "temperature": 0.3},
+                model_config={
+                    **default_model_config(),
+                    "temperature": 0.3,
+                },
                 messages=messages,
             )
             content = response.get("content", "")

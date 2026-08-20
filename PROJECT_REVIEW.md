@@ -146,3 +146,9 @@ result = eval(expr, {"__builtins__": {}}, {**node_input, **(ctx or {})})
 | P2 | 启动失败不再静默(`try/except pass` → 显式告警) |
 | P2 | `app/skills/` vs `app/skill/` 合并 |
 | P2 | 为 executor 输出定义统一协议,消除裸字符串隐患 |
+
+
+## 后续重点关注对象
+1. Planner 能不能稳定生成正确 DAG？
+2. Runtime 能不能可靠地执行和恢复？
+3. Evaluator 能不能可靠判断“任务到底完成没有”？

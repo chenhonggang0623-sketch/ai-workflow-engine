@@ -699,6 +699,62 @@ class ExecutionManager:
     def is_cancel_requested(self, execution_id: UUID) -> bool:
         return execution_id in self._cancelled
 
+    async def recover_stale_executions(self, db_factory) -> None:
+        """进程重启后清理残留的 running 状态。
+
+        uvicorn --reload / 崩溃重启会杀掉执行中的 asyncio 任务与 CLI 子进程，
+        但 DB 里 execution/node 仍停在 running，UI 永久卡死。启动时把所有
+        running 标记为 failed（无法从外部恢复现场）。
+        """
+        from sqlalchemy import select, update
+
+        from app.models.workflow import Execution, NodeExecution
+
+        try:
+            async with db_factory() as session:
+                result = await session.execute(
+                    select(Execution.id).where(Execution.status == "running")
+                )
+                stale_ids = [row[0] for row in result.all()]
+                if stale_ids:
+                    now = datetime.now(UTC).replace(tzinfo=None)
+                    await session.execute(
+                        update(Execution)
+                        .where(Execution.id.in_(stale_ids))
+                        .values(
+                            status="failed",
+                            finished_at=now,
+                        )
+                    )
+                    # 记录失败原因到日志表,便于 UI 展示
+                    for exec_id in stale_ids:
+                        session.add(
+                            ExecutionLogModel(
+                                execution_id=exec_id,
+                                level="error",
+                                message="Execution interrupted: backend worker restarted",
+                            )
+                        )
+                    await session.execute(
+                        update(NodeExecution)
+                        .where(
+                            NodeExecution.execution_id.in_(stale_ids),
+                            NodeExecution.status == "running",
+                        )
+                        .values(
+                            status="failed",
+                            error="Node interrupted: backend worker restarted",
+                            finished_at=now,
+                        )
+                    )
+                    await session.commit()
+                    logger.warning(
+                        "Recovered %d stale running execution(s) after restart",
+                        len(stale_ids),
+                    )
+        except Exception:
+            logger.exception("Failed to recover stale executions")
+
     def get_status(self, execution_id: UUID) -> ExecutionStatus:
         sm = self._state_machines.get(execution_id)
         if not sm:

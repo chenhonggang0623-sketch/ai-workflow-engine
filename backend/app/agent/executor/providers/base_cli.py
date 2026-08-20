@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import signal
+import subprocess
 
 from app.agent.executor.base import BaseExecutor
 from app.agent.executor.types import ExecutionRequest, ExecutionResult
@@ -87,7 +88,11 @@ class BaseCLIExecutor(BaseExecutor):
     async def _read_stream(self, stream, sink: list[str], tag: str,
                            log_sink=None) -> None:
         while True:
-            line = await stream.readline()
+            try:
+                # Popen 的流是阻塞 fd，readline 放线程执行
+                line = await asyncio.to_thread(stream.readline)
+            except (ValueError, OSError):
+                break
             if not line:
                 break
             text = self._process_line(
@@ -120,18 +125,21 @@ class BaseCLIExecutor(BaseExecutor):
                     " ".join(cmd)[:300], cwd, timeout)
 
         stdin_mode = (
-            asyncio.subprocess.PIPE if self.prompt_via_stdin
-            else asyncio.subprocess.DEVNULL
+            subprocess.PIPE if self.prompt_via_stdin
+            else subprocess.DEVNULL
         )
         self._begin_execution(request)
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                resolved,
-                *args,
+            # macOS 上 asyncio.create_subprocess_exec 用 unix socketpair 作为
+            # stdio，Bun 编译的 opencode CLI 会把 stdout 重定向到内部 socket，
+            # 导致 Python 侧 PIPE 读到 EOF、日志全部丢失。改用 subprocess.Popen
+            #（真 pipe）并在线程里读取。见 EXECUTION_PROBLEMS.md P0-4。
+            proc = subprocess.Popen(
+                [resolved] + args,
                 stdin=stdin_mode,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 cwd=cwd,
                 start_new_session=True,
             )
@@ -164,8 +172,12 @@ class BaseCLIExecutor(BaseExecutor):
                 if stdin is None:
                     return
                 try:
-                    stdin.write(prompt.encode("utf-8"))
-                    await stdin.drain()
+                    # Popen stdin 是阻塞的同步 fd，放线程里写避免卡住事件循环
+                    await asyncio.to_thread(stdin.write, prompt.encode("utf-8"))
+                    try:
+                        stdin.flush()
+                    except Exception:
+                        pass
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass
                 finally:
@@ -192,8 +204,12 @@ class BaseCLIExecutor(BaseExecutor):
             # with a per-line cap so we can never block forever.
             while True:
                 try:
-                    line = await asyncio.wait_for(stream.readline(), timeout=0.5)
-                except Exception:
+                    # 进程被 kill 前 pipe 仍打开,readline 会一直阻塞;
+                    # 必须带超时,否则 wait_for 的取消永远传不出来。
+                    line = await asyncio.wait_for(
+                        asyncio.to_thread(stream.readline), timeout=0.5
+                    )
+                except (asyncio.TimeoutError, ValueError, OSError):
                     return
                 if not line:
                     return
@@ -224,7 +240,7 @@ class BaseCLIExecutor(BaseExecutor):
                 # wait for pipe EOF: CLI grandchildren (dev servers etc.)
                 # inherit the pipe FDs, so EOF never arrives even after the
                 # main process exits.
-                await proc.wait()
+                await asyncio.to_thread(proc.wait)
             finally:
                 for r in readers:
                     r.cancel()
@@ -245,11 +261,13 @@ class BaseCLIExecutor(BaseExecutor):
                 if stream is None:
                     continue
                 try:
-                    await asyncio.wait_for(stream.read(), timeout=5.0)
+                    await asyncio.wait_for(
+                        asyncio.to_thread(stream.read), timeout=2.0
+                    )
                 except Exception:
                     break
             try:
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
+                await asyncio.wait_for(asyncio.to_thread(proc.wait), timeout=5.0)
             except Exception:
                 pass
 

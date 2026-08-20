@@ -7,6 +7,7 @@ from sqlalchemy import select, delete
 
 from app.models.blueprint import Blueprint
 from app.planner.complexity_analyzer import ComplexityAnalyzer
+from app.agent.llm_gateway import default_model_config
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ class Architect:
         try:
             result = await self._llm.chat(
                 model_config={
-                    "model": "gpt-4o-mini",
+                    **default_model_config(),
                     "temperature": 0.3,
                     "max_tokens": 4096,
                 },
@@ -100,7 +101,7 @@ class Architect:
         try:
             result = await self._llm.chat(
                 model_config={
-                    "model": "gpt-4o-mini",
+                    **default_model_config(),
                     "temperature": 0.4,
                     "max_tokens": 4096,
                 },

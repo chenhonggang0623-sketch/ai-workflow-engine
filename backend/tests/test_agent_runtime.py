@@ -163,7 +163,7 @@ class TestLLMGateway:
 
         with patch.object(gateway, "_get_client", return_value=mock_client):
             result = await gateway.chat(
-                {"provider": "openai", "model": "gpt-4o-mini"},
+                {"provider": "openai", "model": "gpt-4o-mini", "api_key": "sk-test-not-placeholder"},
                 [{"role": "user", "content": "hi"}],
             )
             assert result["content"] == "retried successfully"

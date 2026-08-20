@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -151,7 +152,7 @@ class TestLocalCLIProvider:
             def write(self, data):
                 self.data += data
 
-            async def drain(self):
+            def flush(self):
                 pass
 
             def close(self):
@@ -161,28 +162,32 @@ class TestLocalCLIProvider:
             def __init__(self, chunks):
                 self._chunks = list(chunks)
 
-            async def readline(self):
+            def readline(self):
                 return self._chunks.pop(0) if self._chunks else b""
+
+            def read(self):
+                return b"".join(self._chunks)
 
         class FakeProc:
             returncode = 0
+            pid = 99999
 
             def __init__(self):
                 self.stdout = FakeStream([b'{"type":"text","part":{"type":"text","text":"done"}}\n'])
                 self.stderr = FakeStream([])
                 self.stdin = FakeStdIn()
 
-            async def wait(self):
+            def wait(self):
                 return 0
 
-        async def fake_spawn(*args, **kwargs):
+        def fake_spawn(args, **kwargs):
             captured["cmd"] = list(args)
             captured["kwargs"] = kwargs
             captured["proc"] = FakeProc()
             return captured["proc"]
 
         monkeypatch.setattr(
-            "app.agent.executor.providers.base_cli.asyncio.create_subprocess_exec",
+            "app.agent.executor.providers.base_cli.subprocess.Popen",
             fake_spawn,
         )
 
@@ -209,7 +214,7 @@ class TestLocalCLIProvider:
         assert "value" not in argv
         # P0-1: prompt 通过 stdin 写入（替代 DEVNULL）
         assert captured["kwargs"]["stdin"] is not None
-        assert captured["kwargs"]["stdin"] != asyncio.subprocess.DEVNULL
+        assert captured["kwargs"]["stdin"] != subprocess.DEVNULL
         stdin_data = captured["proc"].stdin.data.decode()
         assert "SYSTEM PROMPT" in stdin_data
         assert "DO THE TASK" in stdin_data
@@ -222,25 +227,29 @@ class TestLocalCLIProvider:
             def __init__(self, chunks):
                 self._chunks = list(chunks)
 
-            async def readline(self):
+            def readline(self):
                 return self._chunks.pop(0) if self._chunks else b""
+
+            def read(self):
+                return b"".join(self._chunks)
 
         class FakeProc:
             returncode = 0
+            pid = 99999
 
             def __init__(self):
                 self.stdout = FakeStream(stdout_chunks)
                 self.stderr = FakeStream(stderr_chunks)
 
-            async def wait(self):
+            def wait(self):
                 return 0
 
-        async def fake_spawn(*args, **kwargs):
+        def fake_spawn(args, **kwargs):
             captured["cmd"] = list(args)
             return FakeProc()
 
         monkeypatch.setattr(
-            "app.agent.executor.providers.base_cli.asyncio.create_subprocess_exec",
+            "app.agent.executor.providers.base_cli.subprocess.Popen",
             fake_spawn,
         )
         return captured

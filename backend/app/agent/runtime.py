@@ -2,7 +2,7 @@ import json
 import logging
 
 from app.agent.registry import AgentRegistry
-from app.agent.llm_gateway import LLMGateway
+from app.agent.llm_gateway import LLMGateway, default_model_config
 from app.agent.prompt_template import PromptTemplate
 
 logger = logging.getLogger(__name__)
@@ -57,8 +57,7 @@ async def register_builtin_agents(registry: AgentRegistry) -> None:
             "agent_id": agent_id,
             "system_prompt": spec["system_prompt"],
             "model_config": {
-                "provider": "openai",
-                "model": "gpt-4o-mini",
+                **default_model_config(),
                 "temperature": 0.7,
                 "max_tokens": 4096,
             },

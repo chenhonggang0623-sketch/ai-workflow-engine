@@ -136,6 +136,13 @@ async def lifespan(app: FastAPI):
         lambda execution_id, message: manager.broadcast_execution(execution_id, message)
     )
 
+    try:
+        # 进程重启后,把 DB 里残留的 running execution 标记为 failed,
+        # 避免 UI 永久卡在 running(worker 重启会杀掉所有执行中任务)。
+        await exec_mgr.recover_stale_executions(async_session_factory)
+    except Exception:
+        logger.exception("Failed to recover stale executions")
+
     app.state.llm_gateway = llm
     app.state.tool_registry = tool_registry
     app.state.agent_executor = agent_executor

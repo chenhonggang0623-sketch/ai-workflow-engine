@@ -3,6 +3,7 @@ import logging
 import re
 
 from app.planner.complexity_analyzer import ComplexityAnalyzer
+from app.agent.llm_gateway import default_model_config
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ class RequirementAnalyzer:
         try:
             result = await self._llm.chat(
                 model_config={
-                    "model": "gpt-4o-mini",
+                    **default_model_config(),
                     "temperature": 0.3,
                     "max_tokens": 2048,
                 },

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import shutil
 
 from openai import AsyncOpenAI, APIStatusError, APIError
 
@@ -8,7 +9,46 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_PROVIDERS = {"openai"}
+SUPPORTED_PROVIDERS = {"openai", "opencode_cli", "claude_cli", "codex_cli"}
+
+# provider -> (config path key, CLI invocation args, model arg?)
+CLI_PROVIDERS: dict[str, tuple[str, list[str], bool]] = {
+    "opencode_cli": ("opencode_path", ["run"], False),
+    "claude_cli": ("claude_code_path", ["-p", "--output-format", "text"], False),
+    "codex_cli": ("codex_path", ["exec"], False),
+}
+
+CLI_TIMEOUT_SECONDS = 300
+
+
+def _is_placeholder(key: str) -> bool:
+    return not key or key in ("sk-your-key-here", "sk-your-api-key", "your-api-key")
+
+
+def _resolve_cli_command(provider: str) -> str | None:
+    cfg_key = CLI_PROVIDERS[provider][0]
+    path = config_store.get(cfg_key, getattr(settings, cfg_key))
+    if not path:
+        return None
+    resolved = shutil.which(path)
+    if resolved is None:
+        logger.warning("CLI provider %s: command '%s' not found on PATH", provider, path)
+        return None
+    return resolved
+
+
+def available_cli_providers() -> list[str]:
+    return [p for p in CLI_PROVIDERS if _resolve_cli_command(p)]
+
+
+def default_model_config() -> dict:
+    """默认模型配置：DB 覆盖（config_store）优先于 .env 默认值。"""
+    return {
+        "model": config_store.get("default_llm_model", settings.default_llm_model),
+        "provider": config_store.get("default_llm_provider", settings.default_llm_provider),
+        "base_url": config_store.get("openai_base_url", settings.openai_base_url),
+        "api_key": config_store.get("openai_api_key", settings.openai_api_key),
+    }
 
 
 class LLMGateway:
@@ -42,11 +82,29 @@ class LLMGateway:
         temperature = model_config.get("temperature", 0.7)
         max_tokens = model_config.get("max_tokens", 4096)
 
+        if provider in CLI_PROVIDERS:
+            return await self._chat_via_cli(provider, messages)
+
         if provider not in SUPPORTED_PROVIDERS:
             raise ValueError(f"Unsupported LLM provider: {provider}")
 
-        base_url = model_config.get("base_url")
         api_key = model_config.get("api_key")
+        if provider == "openai" and _is_placeholder(api_key):
+            api_key = config_store.get("openai_api_key", settings.openai_api_key)
+        if provider == "openai" and _is_placeholder(api_key):
+            # 无 API key → 自动降级到本地 CLI 通道，保证 provider 至少可用一个
+            cli = available_cli_providers()
+            if not cli:
+                raise RuntimeError(
+                    "No usable LLM provider: openai API key is missing and no "
+                    "local CLI (opencode/claude/codex) is available"
+                )
+            logger.warning(
+                "openai API key missing; falling back to local CLI provider: %s", cli[0]
+            )
+            return await self._chat_via_cli(cli[0], messages)
+
+        base_url = model_config.get("base_url")
         client = self._get_client(base_url, api_key)
 
         kwargs = dict(
@@ -142,6 +200,54 @@ class LLMGateway:
 
         for tc in partial_tool_calls.values():
             yield {"type": "tool_call", "content": tc}
+
+    async def _chat_via_cli(self, provider: str, messages: list[dict]) -> dict:
+        command = _resolve_cli_command(provider)
+        if command is None:
+            raise RuntimeError(f"CLI provider {provider} is not available")
+        args = CLI_PROVIDERS[provider][1]
+
+        prompt_parts = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content") or ""
+            if role == "system":
+                prompt_parts.append(f"System instructions:\n{content}")
+            else:
+                prompt_parts.append(content)
+        prompt = "\n\n".join(prompt_parts)
+
+        proc = await asyncio.create_subprocess_exec(
+            command, *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(prompt.encode("utf-8")), CLI_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError(f"CLI provider {provider} timed out after {CLI_TIMEOUT_SECONDS}s")
+
+        stdout_text = stdout.decode("utf-8", errors="replace").strip()
+        stderr_text = stderr.decode("utf-8", errors="replace").strip()
+        if proc.returncode != 0:
+            detail = stderr_text or stdout_text[-500:]
+            raise RuntimeError(
+                f"CLI provider {provider} exited with code {proc.returncode}: {detail[:500]}"
+            )
+        if not stdout_text:
+            raise RuntimeError(f"CLI provider {provider} returned empty output")
+
+        return {
+            "content": stdout_text,
+            "tool_calls": [],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0},
+            "provider": provider,
+        }
 
     def _parse_response(self, response) -> dict:
         choice = response.choices[0]

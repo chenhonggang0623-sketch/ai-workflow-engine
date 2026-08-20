@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.planner import PlannerAgent, PlanningReview
+from app.agent.providers import availability
 from app.core.config import settings
 
 
@@ -351,24 +352,28 @@ class TestPlannerAgent:
             if node["id"] == "n2":
                 assert node["config"]["system_prompt"] == "different task"
 
-    def test_single_provider_openai_with_real_key_still_defaulted(self, planner, monkeypatch):
+    def test_single_provider_openai_with_real_key_preserved(self, planner, monkeypatch):
         monkeypatch.setattr(settings, "openai_api_key", "sk-real-key-123")
         monkeypatch.setattr(settings, "agent_default_provider", "opencode_cli")
+        monkeypatch.setattr(availability, "available_provider_names", lambda: ["openai", "opencode_cli"])
+        monkeypatch.setattr(availability, "resolve_effective_default", lambda: "opencode_cli")
         workflow = {"nodes": [
             {"id": "n1", "type": "agent", "config": {"provider": "openai", "executor_type": "llm_api"}},
         ], "edges": []}
         planner._normalize_providers(workflow)
-        assert workflow["nodes"][0]["config"]["provider"] == "opencode_cli"
-        assert workflow["nodes"][0]["config"]["executor_type"] == "local_cli"
+        assert workflow["nodes"][0]["config"]["provider"] == "openai"
+        assert workflow["nodes"][0]["config"]["executor_type"] == "llm_api"
 
-    def test_single_provider_cli_provider_with_path_still_defaulted(self, planner, monkeypatch):
+    def test_single_provider_cli_provider_with_path_preserved(self, planner, monkeypatch):
         monkeypatch.setattr(settings, "claude_code_path", "claude")
         monkeypatch.setattr(settings, "agent_default_provider", "opencode_cli")
+        monkeypatch.setattr(availability, "available_provider_names", lambda: ["claude_cli", "opencode_cli"])
+        monkeypatch.setattr(availability, "resolve_effective_default", lambda: "opencode_cli")
         workflow = {"nodes": [
             {"id": "n1", "type": "agent", "config": {"provider": "claude_cli", "executor_type": "local_cli"}},
         ], "edges": []}
         planner._normalize_providers(workflow)
-        assert workflow["nodes"][0]["config"]["provider"] == "opencode_cli"
+        assert workflow["nodes"][0]["config"]["provider"] == "claude_cli"
         assert workflow["nodes"][0]["config"]["executor_type"] == "local_cli"
 
     def test_single_provider_missing_provider_filled_with_default(self, planner, monkeypatch):

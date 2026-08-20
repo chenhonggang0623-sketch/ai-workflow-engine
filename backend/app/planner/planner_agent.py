@@ -233,6 +233,7 @@ class PlannerAgent:
             "model": config_store.get("default_llm_model", settings.default_llm_model),
             "provider": config_store.get("default_llm_provider", settings.default_llm_provider),
             "base_url": config_store.get("openai_base_url", settings.openai_base_url),
+            "api_key": config_store.get("openai_api_key", settings.openai_api_key),
             "temperature": 0.3,
             "max_tokens": 4096,
         }
@@ -722,25 +723,42 @@ class PlannerAgent:
         return workflow
 
     def _normalize_providers(self, workflow: dict) -> dict:
-        """Every agent node runs on the single default provider.
+        """按可用 provider 列表为每个 agent 节点匹配 provider。
 
-        Provider choice is not part of planning: all nodes use
-        AGENT_DEFAULT_PROVIDER (default "opencode_cli") regardless of how many
-        API keys are configured. Nodes differ only by task/purpose/system_prompt.
-        The user adjusts a node's provider later in the DAG editor.
-
-        Also keeps executor_type consistent with the chosen provider.
+        - 节点指定了可用 provider → 保留（用户可在 DAG 编辑器里改）
+        - 节点未指定 / 指定的不可用 → 用实际默认（配置默认不可用时
+          自动落到第一个可用的 CLI），并在 config 标注 provider_unavailable
+        - 无任何可用 provider → 保留原值并标注 provider_unavailable
+        - 替换 provider 或 executor_type 缺失时，executor_type 与 provider 强同步
         """
+        from app.agent.providers.availability import (
+            available_provider_names,
+            resolve_effective_default,
+        )
+
+        available = available_provider_names()
+        effective_default = resolve_effective_default()
         nodes = workflow.get("nodes", [])
         for node in nodes:
             if node.get("type") != "agent":
                 continue
             config = node.setdefault("config", {})
-            provider = settings.agent_default_provider
+            requested = config.get("provider") or settings.agent_default_provider
+            if available:
+                if requested in available:
+                    provider = requested
+                else:
+                    provider = effective_default or available[0]
+                    config["provider_unavailable"] = requested
+                    derived = PROVIDER_TO_EXECUTOR_TYPE.get(provider)
+                    if derived:
+                        config["executor_type"] = derived
+            else:
+                provider = settings.agent_default_provider
+                config["provider_unavailable"] = provider
             config["provider"] = provider
-            executor_type = config.get("executor_type")
             derived = PROVIDER_TO_EXECUTOR_TYPE.get(provider)
-            if derived and (not executor_type or executor_type == "llm_api" and provider != "openai"):
+            if derived and not config.get("executor_type"):
                 config["executor_type"] = derived
         return workflow
 

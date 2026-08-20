@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agent.llm_gateway import LLMGateway
+from app.agent.providers.availability import providers_payload
 from app.core.app_config import config_store
 from app.core.db import get_db
 
@@ -32,6 +33,12 @@ class ConfigUpdate(BaseModel):
 
 def _is_placeholder(key: str) -> bool:
     return not key or key in ("sk-your-key-here", "sk-your-api-key", "your-api-key")
+
+
+@router.get("/providers")
+async def get_providers():
+    """Provider 可用性列表：每个 CLI/API 的启用状态与默认标记。"""
+    return providers_payload()
 
 
 @router.get("/config")
