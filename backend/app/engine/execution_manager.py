@@ -17,6 +17,7 @@ from app.engine.scheduler import DAGScheduler
 from app.engine.state_machine import ExecutionStateMachine
 from app.engine.node_runner import NodeRunner, _apply_output_mapping
 from app.engine.context_service import ContextService, DEFAULT_MAX_CONTEXT_CHARS
+from app.core.limiter import AdaptiveLimiter
 from app.models.workflow import NodeExecution as NodeExecutionModel
 from app.models.workflow import ExecutionLog as ExecutionLogModel
 
@@ -123,9 +124,10 @@ class ExecutionManager:
 
     def __init__(self, node_runner: NodeRunner, max_concurrency: int = 5,
                  context_service: ContextService | None = None,
-                 redis_client=None):
+                 redis_client=None, limiter: AdaptiveLimiter | None = None):
         self._node_runner = node_runner
         self._max_concurrency = max_concurrency
+        self._limiter = limiter or AdaptiveLimiter(max_concurrency)
         self._cancel_events: dict[UUID, asyncio.Event] = {}
         self._state_machines: dict[UUID, ExecutionStateMachine] = {}
         self._cancelled: set[UUID] = set()
@@ -295,7 +297,7 @@ class ExecutionManager:
             "status": sm.status.value,
             "started_at": sm.started_at.isoformat() if sm.started_at else None,
         })
-        semaphore = asyncio.Semaphore(self._max_concurrency)
+        semaphore = self._limiter
 
         node_results: list[NodeResult] = []
         rerun_recommendations: list[dict] = []
@@ -339,7 +341,7 @@ class ExecutionManager:
                         continue
                     task = asyncio.ensure_future(
                         self._execute_node(
-                            node, context, execution_id, db_factory, semaphore, cancel_event
+                            node, context, execution_id, db_factory, self._limiter, cancel_event
                         )
                     )
                     in_flight[task] = node

@@ -29,6 +29,9 @@ from app.engine.node_runner import NodeRunner
 from app.engine.execution_manager import ExecutionManager
 from app.engine.context_service import ContextService
 from app.mcp.tool_registry import ToolRegistry
+from app.core.limiter import AdaptiveLimiter
+from app.core.resource_monitor import ResourceMonitor
+from app.core.system_probe import detect_hardware, recommend_limits
 
 logger = logging.getLogger(__name__)
 
@@ -126,12 +129,28 @@ async def lifespan(app: FastAPI):
     )
     context_service = ContextService()
     node_runner._context_service = context_service
+
+    hardware = detect_hardware()
+    recommended = recommend_limits(hardware)
+    configured = config_store.get("max_concurrency")
+    base_budget = int(configured) if configured else int(recommended["max_concurrency"])
+    exec_limiter = AdaptiveLimiter(base_budget)
     exec_mgr = ExecutionManager(
         node_runner=node_runner,
-        max_concurrency=5,
+        max_concurrency=base_budget,
+        limiter=exec_limiter,
         context_service=context_service,
         redis_client=get_redis(),
     )
+    resource_monitor = ResourceMonitor(
+        exec_limiter,
+        base_budget=base_budget,
+        cpu_cap_percent=int(
+            config_store.get("cpu_usage_cap_percent")
+            or recommended["cpu_usage_cap_percent"]
+        ),
+    )
+    await resource_monitor.start()
     exec_mgr.set_event_callback(
         lambda execution_id, message: manager.broadcast_execution(execution_id, message)
     )
@@ -151,6 +170,10 @@ async def lifespan(app: FastAPI):
     app.state.execution_manager = exec_mgr
 
     yield
+    try:
+        await resource_monitor.stop()
+    except Exception:
+        logger.exception("Failed to stop resource monitor")
     try:
         await close_redis()
     except Exception:

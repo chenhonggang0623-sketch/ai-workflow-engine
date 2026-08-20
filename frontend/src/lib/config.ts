@@ -15,6 +15,21 @@ export interface AppConfig {
   dag_max_fan_in?: number;
   dag_max_fan_out?: number;
   dag_timeout_budget_seconds?: number;
+  max_concurrency?: number;
+  cpu_usage_cap_percent?: number;
+  hardware?: {
+    cpu_count: number;
+    memory_gb: number;
+    platform: string;
+  };
+  recommended?: {
+    max_concurrency: number;
+    dag_max_nodes: number;
+    dag_max_edges: number;
+    dag_max_fan_in: number;
+    dag_max_fan_out: number;
+    cpu_usage_cap_percent: number;
+  };
   loaded_from: string;
 }
 

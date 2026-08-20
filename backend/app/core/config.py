@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     dag_max_fan_out: int = 6
     dag_timeout_budget_seconds: int = 3600
 
+    # 执行预算（None = 按本机配置自动推荐）
+    max_concurrency: int | None = None
+    # 运行时 CPU 占用上限（%），ResourceMonitor 超限自动降并发
+    cpu_usage_cap_percent: int = 75
+
     # 慢节点干预：节点运行超过该秒数后向前端提示用户选择干预动作
     slow_node_after_seconds: int = 300
 

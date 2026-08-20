@@ -28,6 +28,8 @@ DEFAULT_KEYS = [
     "dag_max_fan_in",
     "dag_max_fan_out",
     "dag_timeout_budget_seconds",
+    "max_concurrency",
+    "cpu_usage_cap_percent",
 ]
 
 

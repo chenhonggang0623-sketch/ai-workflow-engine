@@ -470,6 +470,36 @@ async def test_audit_no_recommend_when_clean(mock_node_runner, mock_db_factory):
 
 
 @pytest.mark.asyncio
+async def test_shared_adaptive_limiter_limits_concurrency(mock_node_runner, mock_db_factory):
+    from app.core.limiter import AdaptiveLimiter
+
+    limiter = AdaptiveLimiter(1)
+    mgr = ExecutionManager(
+        node_runner=mock_node_runner, max_concurrency=5, limiter=limiter
+    )
+    exec_id = uuid4()
+
+    running = 0
+    peak = 0
+
+    async def tracked_handle_node(node, context, log_sink=None):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.02)
+        running -= 1
+        return NodeResult(
+            node_id=node.id, status=NodeStatus.SUCCEEDED, output={"result": "ok"},
+        )
+
+    mock_node_runner.handle_node = AsyncMock(side_effect=tracked_handle_node)
+    result = await mgr.execute_workflow(_make_diamond_workflow(), exec_id, mock_db_factory)
+    assert result.status == ExecutionStatus.SUCCEEDED
+    assert peak <= 1
+    assert mgr._limiter is limiter
+
+
+@pytest.mark.asyncio
 async def test_no_rerun_signal_for_non_audit_nodes(mock_node_runner, mock_db_factory):
     mgr = ExecutionManager(node_runner=mock_node_runner, max_concurrency=5)
     exec_id = uuid4()

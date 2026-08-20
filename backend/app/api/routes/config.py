@@ -9,6 +9,7 @@ from app.agent.llm_gateway import LLMGateway
 from app.agent.providers.availability import providers_payload
 from app.core.app_config import config_store
 from app.core.db import get_db
+from app.core.system_probe import detect_hardware, recommend_limits
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,8 @@ class ConfigUpdate(BaseModel):
     dag_max_fan_in: int | None = None
     dag_max_fan_out: int | None = None
     dag_timeout_budget_seconds: int | None = None
+    max_concurrency: int | None = None
+    cpu_usage_cap_percent: int | None = None
 
 
 def _is_placeholder(key: str) -> bool:
@@ -46,6 +49,9 @@ async def get_config():
     """Current effective config. API keys are masked unless empty."""
     config = config_store.all()
     config["loaded_from"] = "db+env"
+    hardware = detect_hardware()
+    config["hardware"] = hardware
+    config["recommended"] = recommend_limits(hardware)
     return config
 
 

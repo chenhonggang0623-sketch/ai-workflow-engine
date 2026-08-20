@@ -90,6 +90,8 @@ export default function ConfigPage() {
   const [dagMaxFanIn, setDagMaxFanIn] = useState("");
   const [dagMaxFanOut, setDagMaxFanOut] = useState("");
   const [dagTimeoutBudget, setDagTimeoutBudget] = useState("");
+  const [maxConcurrency, setMaxConcurrency] = useState("");
+  const [cpuCap, setCpuCap] = useState("");
   const [providers, setProviders] = useState<ProviderStatus[]>([]);
   const [effectiveDefault, setEffectiveDefault] = useState("");
 
@@ -113,6 +115,12 @@ export default function ConfigPage() {
         cfg.dag_timeout_budget_seconds != null
           ? String(cfg.dag_timeout_budget_seconds)
           : ""
+      );
+      setMaxConcurrency(
+        cfg.max_concurrency != null ? String(cfg.max_concurrency) : ""
+      );
+      setCpuCap(
+        cfg.cpu_usage_cap_percent != null ? String(cfg.cpu_usage_cap_percent) : ""
       );
       const known = LLM_PROVIDERS.find(
         (p) => p.value !== "custom" && p.base_url === cfg.openai_base_url
@@ -187,6 +195,10 @@ export default function ConfigPage() {
       if (maxFanIn !== undefined) body.dag_max_fan_in = maxFanIn;
       if (maxFanOut !== undefined) body.dag_max_fan_out = maxFanOut;
       if (timeoutBudget !== undefined) body.dag_timeout_budget_seconds = timeoutBudget;
+      const maxConc = intOrUndefined(maxConcurrency);
+      const cpuCapNum = intOrUndefined(cpuCap);
+      if (maxConc !== undefined) body.max_concurrency = maxConc;
+      if (cpuCapNum !== undefined) body.cpu_usage_cap_percent = cpuCapNum;
       if (apiKeyDirty && apiKey.trim()) {
         body.openai_api_key = apiKey.trim();
       }
@@ -419,8 +431,34 @@ export default function ConfigPage() {
       </Card>
 
       <Card
+        title="本机资源与执行预算"
+        desc={`自动按本机配置计算推荐值(${config?.hardware?.cpu_count ?? "?"} 核 / ${config?.hardware?.memory_gb ?? "?"} GB / ${config?.hardware?.platform ?? "?"})。留空 = 使用推荐值;运行中 CPU 超过上限会自动降并发。`}
+      >
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-2">
+          <Field label="并行节点数上限" hint="同时运行的节点数(max_concurrency)">
+            <input
+              className={inputCls}
+              inputMode="numeric"
+              value={maxConcurrency}
+              onChange={(e) => setMaxConcurrency(e.target.value)}
+              placeholder={config?.recommended?.max_concurrency != null ? String(config.recommended.max_concurrency) : "2"}
+            />
+          </Field>
+          <Field label="CPU 占用上限 (%)" hint="运行时超限自动降并发(cpu_usage_cap_percent)">
+            <input
+              className={inputCls}
+              inputMode="numeric"
+              value={cpuCap}
+              onChange={(e) => setCpuCap(e.target.value)}
+              placeholder={config?.recommended?.cpu_usage_cap_percent != null ? String(config.recommended.cpu_usage_cap_percent) : "75"}
+            />
+          </Field>
+        </div>
+      </Card>
+
+      <Card
         title="DAG Validation Limits"
-        desc="Thresholds for pre-execution DAG checks. Empty = defaults (32 nodes / 96 edges / fan-in 8 / fan-out 6 / 3600s)."
+        desc="Thresholds for pre-execution DAG checks. Empty = recommended values for this machine."
       >
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
           <Field label="Max nodes" hint="dag_max_nodes">
@@ -429,7 +467,7 @@ export default function ConfigPage() {
               inputMode="numeric"
               value={dagMaxNodes}
               onChange={(e) => setDagMaxNodes(e.target.value)}
-              placeholder="32"
+              placeholder={config?.recommended?.dag_max_nodes != null ? String(config.recommended.dag_max_nodes) : "32"}
             />
           </Field>
           <Field label="Max edges" hint="dag_max_edges">
@@ -438,7 +476,7 @@ export default function ConfigPage() {
               inputMode="numeric"
               value={dagMaxEdges}
               onChange={(e) => setDagMaxEdges(e.target.value)}
-              placeholder="96"
+              placeholder={config?.recommended?.dag_max_edges != null ? String(config.recommended.dag_max_edges) : "96"}
             />
           </Field>
           <Field label="Max fan-in" hint="dag_max_fan_in">
@@ -447,7 +485,7 @@ export default function ConfigPage() {
               inputMode="numeric"
               value={dagMaxFanIn}
               onChange={(e) => setDagMaxFanIn(e.target.value)}
-              placeholder="8"
+              placeholder={config?.recommended?.dag_max_fan_in != null ? String(config.recommended.dag_max_fan_in) : "8"}
             />
           </Field>
           <Field label="Max fan-out" hint="dag_max_fan_out">
@@ -456,7 +494,7 @@ export default function ConfigPage() {
               inputMode="numeric"
               value={dagMaxFanOut}
               onChange={(e) => setDagMaxFanOut(e.target.value)}
-              placeholder="6"
+              placeholder={config?.recommended?.dag_max_fan_out != null ? String(config.recommended.dag_max_fan_out) : "6"}
             />
           </Field>
           <Field label="Timeout budget (s)" hint="dag_timeout_budget_seconds">
