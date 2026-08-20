@@ -15,7 +15,7 @@ from app.mcp.tool_registry import ToolRegistry
 from app.planner.planner_agent import PlannerAgent
 from app.planner.architect import Architect
 from app.planner.replan_coordinator import ReplanCoordinator
-from app.planner.workspace import build_project_path, inject_workspace, strip_workspace
+from app.planner.workspace import build_project_path, inject_workspace, next_generation_version, strip_workspace
 from app.schemas.planner import PlanRequest, PlanResponse, PlanConfirm
 from app.engine.types import WorkflowDefinition, NodeDefinition, EdgeDefinition
 from app.engine.execution_manager import ExecutionManager
@@ -99,8 +99,9 @@ async def confirm_plan(body: PlanConfirm, request: Request, db: AsyncSession = D
                 }
 
     execution_id = uuid.uuid4()
+    version = await next_generation_version(db, original_def.name)
     project_path = build_project_path(
-        settings.project_root_abs, original_def.name, execution_id
+        settings.project_root_abs, original_def.name, version
     )
     os.makedirs(project_path, exist_ok=True)
     plan = inject_workspace(plan, project_path)

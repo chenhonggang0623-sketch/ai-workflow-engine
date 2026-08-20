@@ -2,8 +2,12 @@ import copy
 import os
 import re
 import shutil
-from uuid import UUID
+from datetime import datetime
 
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.workflow import Execution, Workflow
 from app.skills.registry import DEFAULT_SKILLS_ROOT
 
 WORKSPACE_PROVIDERS = {"opencode_cli", "claude_cli"}
@@ -39,9 +43,39 @@ def slugify(name: str, max_len: int = 40) -> str:
     return slug[:max_len].rstrip("-") or "project"
 
 
-def build_project_path(project_root: str, workflow_name: str, execution_id: UUID) -> str:
-    short_id = str(execution_id).split("-")[0]
-    return f"{project_root.rstrip('/')}/{slugify(workflow_name)}_{short_id}"
+def format_generation_ts(ts: datetime | None = None) -> str:
+    """生成目录的时间戳：本地时间 YYYYMMDD-HHMM，例如 20260820-1041。"""
+    dt = ts or datetime.now()
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return dt.strftime("%Y%m%d-%H%M")
+
+
+def build_project_path(
+    project_root: str, workflow_name: str, version: int,
+    ts: datetime | None = None,
+) -> str:
+    """项目目录：{slug}_v{版本号}_{本地时间}，如 blog-system_v2_20260820-1041。
+
+    version 是同名项目「第几次生成」的序号，时间戳用于肉眼分辨先后。
+    """
+    stamp = format_generation_ts(ts)
+    return f"{project_root.rstrip('/')}/{slugify(workflow_name)}_v{version}_{stamp}"
+
+
+async def next_generation_version(db: AsyncSession, workflow_name: str) -> int:
+    """返回同名项目下一次生成的版本号（已有执行数 + 1）。
+
+    跨同名 workflow 计数：页面每生成一次会新建 workflow，重新执行
+    同一 workflow 也会新增 execution，两者都算一次「生成」。
+    """
+    result = await db.execute(
+        select(func.count())
+        .select_from(Execution)
+        .join(Workflow, Workflow.id == Execution.workflow_id)
+        .where(Workflow.name == workflow_name)
+    )
+    return (result.scalar_one() or 0) + 1
 
 
 def inject_skills(project_path: str, skill_ids: list[str],

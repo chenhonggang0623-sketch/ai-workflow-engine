@@ -22,7 +22,7 @@ from app.schemas.workflow import WorkflowCreate, WorkflowUpdate, WorkflowRespons
 from app.engine.types import WorkflowDefinition, NodeDefinition, EdgeDefinition
 from app.engine.dag_validator import validate_dag, resolve_dag_limits
 from app.engine.execution_manager import ExecutionManager
-from app.planner.workspace import build_project_path, inject_workspace, strip_workspace
+from app.planner.workspace import build_project_path, inject_workspace, next_generation_version, strip_workspace
 
 router = APIRouter()
 
@@ -220,8 +220,9 @@ async def execute_workflow(
     # 第一次执行烘焙的项目路径。先剥离旧注入，再按本次 execution_id 生成新目录。
     definition = strip_workspace(definition)
     execution_id = uuid.uuid4()
+    version = await next_generation_version(db, workflow.name)
     project_path = build_project_path(
-        settings.project_root_abs, workflow.name, execution_id
+        settings.project_root_abs, workflow.name, version
     )
     os.makedirs(project_path, exist_ok=True)
     definition = inject_workspace(definition, project_path)

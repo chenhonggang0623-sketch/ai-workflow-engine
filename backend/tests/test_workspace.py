@@ -53,15 +53,26 @@ def test_slugify():
 
 
 def test_build_project_path():
-    eid = uuid.uuid4()
-    path = build_project_path("./generated_projects", "Blog System", eid)
-    assert path == f"./generated_projects/blog-system_{str(eid).split('-')[0]}"
-    assert path == build_project_path("./generated_projects/", "Blog System", eid)
+    from datetime import datetime
+
+    path = build_project_path("./generated_projects", "Blog System", 1,
+                              ts=datetime(2026, 8, 20, 10, 41))
+    assert path == "./generated_projects/blog-system_v1_20260820-1041"
+    assert path == build_project_path(
+        "./generated_projects/", "Blog System", 1,
+        ts=datetime(2026, 8, 20, 10, 41),
+    )
+    assert build_project_path(
+        "/tmp/projects", "Blog System", 3, ts=datetime(2026, 8, 20, 10, 41)
+    ) == "/tmp/projects/blog-system_v3_20260820-1041"
+    assert build_project_path(
+        "/tmp/projects", "Blog System", 2, ts=datetime(2026, 8, 20, 10, 45)
+    ) == "/tmp/projects/blog-system_v2_20260820-1045"
 
 
 def test_inject_workspace_only_coding_nodes():
     eid = uuid.uuid4()
-    path = build_project_path("/tmp/projects", "Blog System", eid)
+    path = build_project_path("/tmp/projects", "Blog System", 1)
     updated = inject_workspace(_plan(), path)
 
     assert updated["nodes"][0]["config"]["provider"] == "openai"
@@ -80,7 +91,7 @@ def test_inject_workspace_only_coding_nodes():
 def test_inject_workspace_does_not_mutate_original():
     original = _plan()
     eid = uuid.uuid4()
-    path = build_project_path("/tmp/projects", "Blog System", eid)
+    path = build_project_path("/tmp/projects", "Blog System", 1)
     inject_workspace(original, path)
 
     assert "working_directory" not in original["nodes"][1]["config"]
@@ -91,7 +102,7 @@ def test_inject_workspace_keeps_existing_hint():
     plan = _plan()
     plan["nodes"][1]["config"]["system_prompt"] = "Implement the backend."
     eid = uuid.uuid4()
-    path = build_project_path("/tmp/projects", "Blog System", eid)
+    path = build_project_path("/tmp/projects", "Blog System", 1)
     updated = inject_workspace(plan, path)
     system_prompt = updated["nodes"][1]["config"]["system_prompt"]
     assert system_prompt.count("Working directory:") == 1
@@ -102,7 +113,7 @@ def test_inject_workspace_claude_cli():
     plan = _plan()
     plan["nodes"][1]["config"]["provider"] = "claude_cli"
     eid = uuid.uuid4()
-    path = build_project_path("/tmp/projects", "Blog System", eid)
+    path = build_project_path("/tmp/projects", "Blog System", 1)
     updated = inject_workspace(plan, path)
     assert updated["nodes"][1]["config"]["working_directory"] == path
 
@@ -116,11 +127,11 @@ def test_inject_workspace_empty_nodes():
 
 def test_strip_workspace_removes_injected_paths():
     eid = uuid.uuid4()
-    path1 = build_project_path("/tmp/projects", "Blog System", eid)
+    path1 = build_project_path("/tmp/projects", "Blog System", 1)
     injected = inject_workspace(_plan(), path1)
 
     eid2 = uuid.uuid4()
-    path2 = build_project_path("/tmp/projects", "Blog System", eid2)
+    path2 = build_project_path("/tmp/projects", "Blog System", 2)
     stripped = strip_workspace(injected)
     plan = inject_workspace(stripped, path2)
 
@@ -135,7 +146,7 @@ def test_strip_workspace_removes_injected_paths():
 def test_strip_workspace_keeps_other_config():
     plan = _plan()
     eid = uuid.uuid4()
-    path = build_project_path("/tmp/projects", "Blog System", eid)
+    path = build_project_path("/tmp/projects", "Blog System", 1)
     injected = inject_workspace(plan, path)
     stripped = strip_workspace(injected)
 
@@ -148,7 +159,7 @@ def test_strip_workspace_keeps_other_config():
 
 def test_strip_workspace_does_not_mutate_original():
     eid = uuid.uuid4()
-    path = build_project_path("/tmp/projects", "Blog System", eid)
+    path = build_project_path("/tmp/projects", "Blog System", 1)
     injected = inject_workspace(_plan(), path)
     strip_workspace(injected)
     assert injected["nodes"][1]["config"]["working_directory"] == path
@@ -207,7 +218,7 @@ class TestInjectWorkspaceWithSkills:
         plan = _plan()
         plan["nodes"][1]["config"]["skill_id"] = "subagent-driven-development"
         eid = uuid.uuid4()
-        path = build_project_path(str(tmp_path / "projects"), "Blog System", eid)
+        path = build_project_path(str(tmp_path / "projects"), "Blog System", 1)
         updated = inject_workspace(plan, path, skills_root=str(skills_root))
 
         assert updated["nodes"][1]["config"]["skill_id"] == "subagent-driven-development"

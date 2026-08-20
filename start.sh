@@ -53,9 +53,12 @@ alembic upgrade head 2>/dev/null || echo "     (first run — tables created on 
 
 echo ""
 echo "==> Starting backend (uvicorn) on port $BACKEND_PORT..."
-# --reload-exclude: agent 运行时会在 generated_projects 写 .py 文件，
-# 若不排除会把正在执行的 worker 触发重启，导致进行中的节点任务被杀死
-uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload --reload-exclude "app/generated_projects/*" &
+# --reload-exclude: agent 运行时会在 generated_projects 写 .py 文件（如 Flutter 生成的
+# flutter_lldb_helper.py），若不排除会把正在执行的 worker 触发重启，导致进行中的节点任务被杀死。
+# 注意：必须传「绝对路径目录」。watchfiles 回调拿到的是绝对路径，而 Path.match 的 `*` 不跨
+# 目录分隔符，`app/generated_projects/*` 只匹配一层、嵌套子目录下的 .py 会漏网触发 reload。
+GENERATED_PROJECTS_DIR="$ROOT_DIR/backend/app/generated_projects"
+uvicorn app.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --reload --reload-exclude "$GENERATED_PROJECTS_DIR" &
 BACKEND_PID=$!
 
 # 4. Frontend
