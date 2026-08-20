@@ -26,6 +26,26 @@ export interface LLMTestResult {
   reply?: string;
 }
 
+export interface ProviderStatus {
+  name: string;
+  label: string;
+  kind: string;
+  enabled: boolean;
+  reason: string;
+  default: boolean;
+}
+
+export interface ProvidersPayload {
+  providers: ProviderStatus[];
+  default_provider: string;
+  configured_default: string;
+  any_available: boolean;
+}
+
+export function getProviders(): Promise<ProvidersPayload> {
+  return get<ProvidersPayload>("/providers");
+}
+
 export function getConfig(): Promise<AppConfig> {
   return get<AppConfig>("/config");
 }

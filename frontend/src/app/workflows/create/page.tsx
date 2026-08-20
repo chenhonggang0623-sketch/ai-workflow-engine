@@ -138,6 +138,11 @@ export default function CreateWorkflowPage() {
         >
           {planning ? "Planning..." : "Generate Workflow Plan"}
         </button>
+        {planning && (
+          <p className="text-xs text-gray-400">
+            正在分析需求并生成 DAG，通常需要 1-3 分钟，请耐心等待…
+          </p>
+        )}
       </div>
 
       {planResult && (

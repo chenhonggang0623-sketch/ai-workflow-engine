@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getConfig, updateConfig, testLLM, type AppConfig, type LLMTestResult } from "@/lib/config";
+import { getConfig, updateConfig, testLLM, getProviders, type AppConfig, type LLMTestResult, type ProviderStatus } from "@/lib/config";
 
 const AGENT_PROVIDERS = [
   { value: "opencode_cli", label: "OpenCode CLI", desc: "本地 OpenCode 命令行 Agent（默认）" },
@@ -10,11 +10,19 @@ const AGENT_PROVIDERS = [
   { value: "openai", label: "LLM API", desc: "直接调用大模型 API（OpenAI 兼容）" },
 ];
 
+const PLANNING_PROVIDERS = [
+  { value: "opencode_cli", label: "OpenCode CLI", desc: "用本地 OpenCode 跑需求解析与 DAG 生成（免 API Key，推荐）" },
+  { value: "claude_cli", label: "Claude Code CLI", desc: "用本地 Claude Code 跑需求解析与 DAG 生成" },
+  { value: "codex_cli", label: "Codex CLI", desc: "用本地 Codex CLI 跑需求解析与 DAG 生成" },
+  { value: "openai", label: "LLM API", desc: "走下方 OpenAI 兼容 API（需有效 Key）" },
+];
+
 const LLM_PROVIDERS = [
   { value: "openai", label: "OpenAI", base_url: "https://api.openai.com/v1", model: "gpt-4o-mini" },
   { value: "deepseek", label: "DeepSeek", base_url: "https://api.deepseek.com/v1", model: "deepseek-chat" },
   { value: "moonshot", label: "Moonshot Kimi", base_url: "https://api.moonshot.cn/v1", model: "kimi-k2" },
   { value: "openrouter", label: "OpenRouter", base_url: "https://openrouter.ai/api/v1", model: "openai/gpt-4o-mini" },
+  { value: "agnes", label: "Agnes", base_url: "https://apihub.agnes-ai.com/v1", model: "agnes-2.5-flash" },
   { value: "ollama", label: "Ollama (本地)", base_url: "http://localhost:11434/v1", model: "qwen2.5:14b" },
   { value: "vllm", label: "vLLM (自建)", base_url: "http://localhost:8000/v1", model: "" },
   { value: "custom", label: "自定义", base_url: "", model: "" },
@@ -69,6 +77,7 @@ export default function ConfigPage() {
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
 
   const [llmProvider, setLlmProvider] = useState("custom");
+  const [planningProvider, setPlanningProvider] = useState("opencode_cli");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
@@ -81,6 +90,8 @@ export default function ConfigPage() {
   const [dagMaxFanIn, setDagMaxFanIn] = useState("");
   const [dagMaxFanOut, setDagMaxFanOut] = useState("");
   const [dagTimeoutBudget, setDagTimeoutBudget] = useState("");
+  const [providers, setProviders] = useState<ProviderStatus[]>([]);
+  const [effectiveDefault, setEffectiveDefault] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -90,6 +101,7 @@ export default function ConfigPage() {
       setApiKey(cfg.openai_api_key);
       setModel(cfg.default_llm_model);
       setDefaultProvider(cfg.agent_default_provider);
+      setPlanningProvider(cfg.default_llm_provider || "opencode_cli");
       setOpencodePath(cfg.opencode_path || "opencode");
       setClaudePath(cfg.claude_code_path || "claude");
       setCodexPath(cfg.codex_path || "codex");
@@ -117,6 +129,31 @@ export default function ConfigPage() {
     load();
   }, [load]);
 
+  const loadProviders = useCallback(async () => {
+    try {
+      const payload = await getProviders();
+      setProviders(payload.providers);
+      setEffectiveDefault(payload.default_provider);
+    } catch {
+      // provider 列表加载失败不阻塞页面
+    }
+  }, []);
+
+  useEffect(() => {
+    loadProviders();
+  }, [loadProviders]);
+
+  async function setDefaultProviderViaApi(name: string) {
+    try {
+      await updateConfig({ agent_default_provider: name });
+      setDefaultProvider(name);
+      await loadProviders();
+      setSaveMsg(`Default agent provider set to ${name}`);
+    } catch (e) {
+      setSaveMsg(`Failed to set default provider: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   function handleProviderPreset(value: string) {
     setLlmProvider(value);
     const preset = LLM_PROVIDERS.find((p) => p.value === value);
@@ -133,6 +170,7 @@ export default function ConfigPage() {
       const body: Partial<AppConfig> = {
         openai_base_url: baseUrl.trim(),
         default_llm_model: model.trim(),
+        default_llm_provider: planningProvider,
         agent_default_provider: defaultProvider,
         opencode_path: opencodePath.trim(),
         claude_code_path: claudePath.trim(),
@@ -264,6 +302,80 @@ export default function ConfigPage() {
                 : `Failed: ${testResult.error}`}
             </span>
           )}
+        </div>
+      </Card>
+
+      <Card title="Planner Provider" desc="Used for requirement parsing, blueprint design and DAG generation.">
+        <div className="space-y-2">
+          {PLANNING_PROVIDERS.map((p) => (
+            <label
+              key={p.value}
+              className={`flex cursor-pointer items-start gap-3 rounded-md border px-3 py-2.5 transition-colors ${
+                planningProvider === p.value
+                  ? "border-blue-500 bg-blue-500/10"
+                  : "border-gray-700 bg-gray-900 hover:border-gray-600"
+              }`}
+            >
+              <input
+                type="radio"
+                name="planning-provider"
+                className="mt-1 accent-blue-500"
+                checked={planningProvider === p.value}
+                onChange={() => setPlanningProvider(p.value)}
+              />
+              <span>
+                <span className="block text-sm font-medium text-gray-200">{p.label}</span>
+                <span className="block text-xs text-gray-500">{p.desc}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      </Card>
+
+      <Card title="Provider 列表" desc="自动探测本地 CLI 与 API Key 的可用性；不可用的项会提示配置方式。">
+        <div className="space-y-2">
+          {providers.length === 0 && (
+            <p className="text-sm text-gray-500">加载中…</p>
+          )}
+          {providers.map((p) => (
+            <div
+              key={p.name}
+              className={`flex items-center gap-3 rounded-md border px-3 py-2.5 ${
+                p.enabled
+                  ? "border-gray-700 bg-gray-900"
+                  : "border-amber-900/40 bg-amber-950/10"
+              }`}
+            >
+              <span
+                className={`inline-block h-2.5 w-2.5 shrink-0 rounded-full ${
+                  p.enabled ? "bg-green-500" : "bg-amber-500"
+                }`}
+                title={p.enabled ? "已启用" : "未启用"}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-gray-200">{p.label}</span>
+                  <span className="rounded bg-gray-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-400">
+                    {p.kind}
+                  </span>
+                  {p.default && (
+                    <span className="rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] text-blue-300">
+                      默认
+                    </span>
+                  )}
+                </span>
+                <span className="block truncate text-xs text-gray-500">{p.reason}</span>
+              </span>
+              {p.enabled && !p.default && (
+                <button
+                  onClick={() => setDefaultProviderViaApi(p.name)}
+                  className="shrink-0 rounded-md border border-gray-700 px-2.5 py-1 text-xs text-gray-300 transition-colors hover:border-blue-500 hover:text-blue-300"
+                >
+                  设为默认
+                </button>
+              )}
+            </div>
+          ))}
         </div>
       </Card>
 
